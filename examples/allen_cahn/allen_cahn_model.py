@@ -5,8 +5,6 @@ import jax
 import jax.numpy as jnp
 import random
 import time
-import wandb
-import os
 
 DEFAULT_CONFIG = {
     "fourier_features": True,
