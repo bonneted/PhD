@@ -5,6 +5,10 @@ import jax
 import jax.numpy as jnp
 import random
 import time
+import matplotlib.pyplot as plt
+import matplotlib.transforms as mtransforms
+from matplotlib import ticker
+
 
 DEFAULT_CONFIG = {
     "fourier_features": True,
@@ -125,6 +129,135 @@ def eval_allen_cahn(config, model, dataset_path=data_set_path):
         "l2_error": l2_error,
         "u_true": u
     }
+
+
+def make_formatter():
+    """
+    Create and return a scalar formatter for colorbar tick labels.
+    """
+    formatter = ticker.ScalarFormatter(useMathText=True)
+    formatter.set_scientific(True)
+    formatter.set_powerlimits((-2, 2))
+    return formatter
+
+def plot_allen_cahn_results(fig, ax, fields, tt, xx, rows_title, font_factor=3, title_font_size=6, axes_font_size=5):
+    """
+    Plot Allen-Cahn results using a fields dictionary.
+    fields: dict, keys are field names, values are dicts with:
+        - "data": list of 2D arrays (first is ground truth, others are predictions/errors/etc)
+        - "title": str, title for the column
+        - "cmap": str or None, optional colormap
+        - "abs": bool, if True, plot absolute value
+    The first field is assumed to be the reference (ground truth).
+    """
+    n_rows = len(rows_title) + 1
+    field_names = list(fields.keys())
+
+    # Compute vmin/vmax for the reference field
+    ref_field = fields[field_names[0]]["data"]
+    vmin = np.nanmin(ref_field[0])
+    vmax = np.nanmax(ref_field[0])
+
+    for col, fname in enumerate(field_names):
+        field = fields[fname]
+        cmap = field.get("cmap", None)
+        is_abs = field.get("abs", False)
+        for row in range(n_rows):
+            ax[row][col].set_xticks([])
+            ax[row][col].set_yticks([])
+            ax[row][col].set_aspect(1/2)
+            if row == 0:
+                # Reference row
+                if col == 0:
+                    im = ax[row][col].pcolor(tt, xx, ref_field[0], vmin=vmin, vmax=vmax)
+                    ax[row][col].set_title(r"$u_{true}(t,x)$")
+                    ax[row][col].set_ylabel("x")
+                else:
+                    ax[row][col].axis("off")
+            else:
+                # data = field["data"][row-1]
+                data = field["data"][row if len(field["data"]) == n_rows else row-1]
+
+                x_fields = field["x_fields"] if "x_fields" in field else xx
+                t_fields = field["t_fields"] if "t_fields" in field else tt
+                if is_abs:
+                    data = np.abs(data)
+                im = ax[row][col].pcolor(t_fields, x_fields, data, cmap=cmap)
+                if col == 0:
+                    ax[row][col].set_ylabel("x")
+                if row == n_rows - 1:
+                    ax[row][col].set_xlabel("t")
+                if row == 1:
+                    ax[row][col].set_title(field["title"], pad=10)
+
+                    shift = -0.005  # shift axis downwards
+                    pos = ax[row][col].get_position()
+                    ax[row][col].set_position([
+                        pos.x0,
+                        pos.y0 + shift,
+                        pos.width,
+                        pos.height
+                    ])
+                if row > 2:
+                    shift = +0.005*(row-2)  # shift axis downwards
+                    pos = ax[row][col].get_position()
+                    ax[row][col].set_position([
+                        pos.x0,
+                        pos.y0 + shift,
+                        pos.width,
+                        pos.height
+                    ])
+                # Add row label on the left
+                if col == 0:
+                    pos = ax[row][col].get_position()
+                    fig.text(
+                        pos.x0 - 0.04,
+                        pos.y0 + pos.height / 2,
+                        rows_title[row-1],
+                        va='center',
+                        ha='center',
+                        rotation='vertical',
+                    )
+            
+            # shift axis for better layout
+            if col > 0 :
+                shift = -0.04  # negative shifts the 2nd column leftwards
+                pos = ax[row][col].get_position()
+                ax[row][col].set_position([
+                    pos.x0 + shift,  # shift left
+                    pos.y0,
+                    pos.width,
+                    pos.height
+                ])
+
+            # Colorbar
+            if row > 0 and col != 0:
+                pos = ax[row][col].get_position()
+                cbar_width = 0.1 / fig.get_size_inches()[0]
+                cbar_x_offset = 0.18 / fig.get_size_inches()[0]
+                cax_pos = mtransforms.Bbox.from_bounds(pos.x1 + cbar_x_offset, pos.y0, cbar_width, pos.height)
+                cax = fig.add_axes(cax_pos)
+                cbfield = fig.colorbar(im, cax=cax, orientation='vertical', format=make_formatter())
+                cbfield.ax.yaxis.set_ticks_position('right')
+            
+            # add relative L2 error for error plots
+            if fname == "Error" and row > 0:
+                rel_l2_error = np.linalg.norm(data) / np.linalg.norm(ref_field[0])
+                ax[row][col].text(0.07, 0.93, r"$E_{\mathcal{L}_2}=$"+ f" {rel_l2_error:.2e}", transform=ax[row][col].transAxes, ha='left', va='top', fontsize=plt.rcParams['axes.titlesize']*2/3)
+
+
+            
+    # Add colorbar for the reference field
+    pos = ax[n_rows-1][0].get_position()
+    cbar_height = 0.1 / fig.get_size_inches()[1]
+    cbar_y_offset = 0.5 / fig.get_size_inches()[1]
+    cax_pos = mtransforms.Bbox.from_bounds(pos.x0 + 0.05*pos.width, pos.y0 - cbar_y_offset, pos.width*0.9, cbar_height)
+    cax = fig.add_axes(cax_pos)
+    cbfield = fig.colorbar(ax[0][0].collections[0], cax=cax, orientation='horizontal', format=make_formatter())
+    cbfield.ax.xaxis.set_ticks_position('bottom')
+
+    print(f"Fig width: {fig.get_figwidth()}, set it to {fig.get_figwidth()/font_factor:.2f} < 6.34 (A4 with margins) in latex to have a printed font size of {title_font_size:.2f} for titles and {axes_font_size:.2f} for the axis")
+
 
 def train_allen_cahn(config=None, wandb_project=None):
     # Always start from defaults
