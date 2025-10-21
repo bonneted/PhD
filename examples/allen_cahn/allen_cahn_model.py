@@ -21,8 +21,9 @@ DEFAULT_CONFIG = {
     "n_hidden": 3,
     "rank": 64,
     "num_domain": 150**2,
-    "learning_rates": [1e-3, 1e-4, 5e-5, 1e-5, 5e-6],
-    "n_iters": 30000,
+    "lr": [1e-3, 1e-4, 5e-5, 1e-5, 5e-6],
+    "lr_decay": None,
+    "n_iter": 30000,
     "seed": 0,
     "restored_params": None,
     "pde_coefficient": 0.001,  # The 'd' parameter
@@ -268,17 +269,19 @@ def train_allen_cahn(config=None, wandb_project=None):
         cfg.update(config)
     cfg = Config(**cfg)
 
-    # if wandb logging, init with the merged config
+    # if wandb logging, init with the merged config (or use existing wandb.run if sweep)
     if wandb_project:
         import wandb
-        wandb.init(project=wandb_project, config=cfg)
-        cfg = wandb.config
+        # If called from a sweep, wandb.run already exists
+        if wandb.run is None:
+            wandb.init(project=wandb_project, config=cfg.__dict__)
+        # Update cfg from wandb.config (useful for sweeps)
+        cfg_dict = cfg.__dict__.copy()
+        cfg_dict.update(dict(wandb.config))
+        cfg = Config(**cfg_dict)
 
     # Set random seed
-    np.random.seed(cfg.seed)
-    random.seed(cfg.seed)
-    if dde.backend.backend_name == "jax":
-        key = jax.random.PRNGKey(cfg.seed)
+    dde.config.set_random_seed(cfg.seed)
 
     # Set autodiff mode based on network type
     if cfg.net_type == "SPINN":
@@ -322,7 +325,7 @@ def train_allen_cahn(config=None, wandb_project=None):
 
     @list_handler
     def fourier_features_transform(x, sigma=cfg.sigma, num_features=cfg.n_fourier_features):
-        kernel = jax.random.normal(jax.random.PRNGKey(0), (x.shape[-1], num_features)) * sigma
+        kernel = jax.random.normal(jax.random.PRNGKey(cfg.seed), (x.shape[-1], num_features)) * sigma
         y = jnp.concatenate([jnp.cos(jnp.dot(x, kernel)), jnp.sin(jnp.dot(x, kernel))], axis=-1)
         return y
 
@@ -363,11 +366,10 @@ def train_allen_cahn(config=None, wandb_project=None):
 
     # Training
     start_time = time.time()
-    for lr in cfg.learning_rates:
-        model.compile("adam", lr=lr, external_trainable_variables=trainable_variables)
-        losshistory, train_state = model.train(iterations=cfg.n_iters)
+    model.compile("adam", lr=cfg.lr, decay=cfg.lr_decay, external_trainable_variables=trainable_variables)
+    losshistory, train_state = model.train(iterations=cfg.n_iter)
     elapsed = time.time() - start_time
-    its_per_sec = cfg.n_iters * len(cfg.learning_rates) / elapsed
+    its_per_sec = cfg.n_iter / elapsed
 
     # Evaluation
     eval_results = eval_allen_cahn(cfg, model)
@@ -381,13 +383,15 @@ def train_allen_cahn(config=None, wandb_project=None):
     # Log to wandb if enabled
     if wandb_project is not None:
         wandb.log({
+            **cfg.__dict__,
             "mean_pde_residual": eval_results['mean_pde_residual'],
             "l2_relative_error": eval_results['l2_error'],
             "final_loss": float(train_state.loss_train[0]),
             "elapsed_time_s": elapsed,
             "iterations_per_sec": its_per_sec
         })
-        wandb.finish()
+        # Don't call wandb.finish() here - let the caller handle it
+        # This allows both standalone runs and sweep runs to work properly
 
     return {
         "config": cfg.__dict__,
