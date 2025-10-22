@@ -37,7 +37,12 @@ class Config:
     def __init__(self, **entries):
         self.__dict__.update(entries)
 
-data_set_path = "examples/allen_cahn/dataset/Allen_Cahn.mat"
+# Auto-detect dataset path for both CLI and notebook usage
+import os
+_paths = ["dataset/Allen_Cahn.mat", "examples/allen_cahn/dataset/Allen_Cahn.mat"]
+data_set_path = next((p for p in _paths if os.path.exists(p)), 
+                     os.path.join(os.path.dirname(__file__), "dataset/Allen_Cahn.mat"))
+
 def test_data_allen_cahn(config, dataset_path=data_set_path):
     """Generate test data for Allen-Cahn equation evaluation."""
     data = loadmat(dataset_path)
@@ -260,7 +265,7 @@ def plot_allen_cahn_results(fig, ax, fields, tt, xx, rows_title, font_factor=3, 
     print(f"Fig width: {fig.get_figwidth()}, set it to {fig.get_figwidth()/font_factor:.2f} < 6.34 (A4 with margins) in latex to have a printed font size of {title_font_size:.2f} for titles and {axes_font_size:.2f} for the axis")
 
 
-def train_allen_cahn(config=None, wandb_project=None):
+def train_allen_cahn(config=None):
     # Always start from defaults
     cfg = DEFAULT_CONFIG.copy()
 
@@ -268,17 +273,6 @@ def train_allen_cahn(config=None, wandb_project=None):
     if config is not None:
         cfg.update(config)
     cfg = Config(**cfg)
-
-    # if wandb logging, init with the merged config (or use existing wandb.run if sweep)
-    if wandb_project:
-        import wandb
-        # If called from a sweep, wandb.run already exists
-        if wandb.run is None:
-            wandb.init(project=wandb_project, config=cfg.__dict__)
-        # Update cfg from wandb.config (useful for sweeps)
-        cfg_dict = cfg.__dict__.copy()
-        cfg_dict.update(dict(wandb.config))
-        cfg = Config(**cfg_dict)
 
     # Set random seed
     dde.config.set_random_seed(cfg.seed)
@@ -296,6 +290,7 @@ def train_allen_cahn(config=None, wandb_project=None):
     # Self Attention    
     trainable_variables = []
     if cfg.SA:
+        key = jax.random.PRNGKey(cfg.seed)
         if cfg.SA_init == "constant":
             pde_weights = jnp.ones((cfg.num_domain, 1))
         elif cfg.SA_init == "uniform":
@@ -380,19 +375,6 @@ def train_allen_cahn(config=None, wandb_project=None):
     print(f"L2 relative error: {eval_results['l2_error']:.3e}")
     print(f"Elapsed training time: {elapsed:.2f} s, {its_per_sec:.2f} it/s")
 
-    # Log to wandb if enabled
-    if wandb_project is not None:
-        wandb.log({
-            **cfg.__dict__,
-            "mean_pde_residual": eval_results['mean_pde_residual'],
-            "l2_relative_error": eval_results['l2_error'],
-            "final_loss": float(train_state.loss_train[0]),
-            "elapsed_time_s": elapsed,
-            "iterations_per_sec": its_per_sec
-        })
-        # Don't call wandb.finish() here - let the caller handle it
-        # This allows both standalone runs and sweep runs to work properly
-
     return {
         "config": cfg.__dict__,
         "model": model,
@@ -403,4 +385,29 @@ def train_allen_cahn(config=None, wandb_project=None):
     }
 
 if __name__ == "__main__":
-    results = train_allen_cahn()
+    import sys
+    # Check if running as part of a wandb sweep (wandb injects config via command line args)
+    if len(sys.argv) > 1:
+        # Running from wandb sweep - wandb will handle config
+        import wandb
+        wandb.init()
+        # wandb.config contains all sweep parameters
+        config = dict(wandb.config)
+        
+        # Run training
+        results = train_allen_cahn(config=config)
+        
+        # Log results to wandb (including full config with defaults)
+        wandb.log({
+            **results['config'],  # Full config including default values
+            "mean_pde_residual": results['evaluation']['mean_pde_residual'],
+            "l2_relative_error": results['evaluation']['l2_error'],
+            "final_loss": float(results['losshistory'].loss_train[-1].item()),
+            "elapsed_time_s": results['elapsed_time'],
+            "iterations_per_sec": results['iterations_per_sec']
+        })
+        
+        wandb.finish()
+    else:
+        # Running standalone
+        results = train_allen_cahn()
