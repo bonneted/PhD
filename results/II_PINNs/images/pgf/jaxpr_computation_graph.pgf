@@ -30,9 +30,9 @@
 %%   
 %%   \ifdefined\pdftexversion\else  % non-pdftex case.
 %%     \usepackage{fontspec}
-%%     \setmainfont{DejaVuSerif.ttf}[Path=\detokenize{/home/bonneted/miniconda3/envs/jax/lib/python3.12/site-packages/matplotlib/mpl-data/fonts/ttf/}]
-%%     \setsansfont{DejaVuSans.ttf}[Path=\detokenize{/home/bonneted/miniconda3/envs/jax/lib/python3.12/site-packages/matplotlib/mpl-data/fonts/ttf/}]
-%%     \setmonofont{DejaVuSansMono.ttf}[Path=\detokenize{/home/bonneted/miniconda3/envs/jax/lib/python3.12/site-packages/matplotlib/mpl-data/fonts/ttf/}]
+%%     \setmainfont{DejaVuSerif.ttf}[Path=\detokenize{/home/r2d2/miniconda3/envs/jax/lib/python3.10/site-packages/matplotlib/mpl-data/fonts/ttf/}]
+%%     \setsansfont{DejaVuSans.ttf}[Path=\detokenize{/home/r2d2/miniconda3/envs/jax/lib/python3.10/site-packages/matplotlib/mpl-data/fonts/ttf/}]
+%%     \setmonofont{DejaVuSansMono.ttf}[Path=\detokenize{/home/r2d2/miniconda3/envs/jax/lib/python3.10/site-packages/matplotlib/mpl-data/fonts/ttf/}]
 %%   \fi
 %%   \makeatletter\@ifpackageloaded{underscore}{}{\usepackage[strings]{underscore}}\makeatother
 %%
@@ -255,12 +255,12 @@
 \definecolor{currentstroke}{rgb}{0.000000,0.000000,0.000000}%
 \pgfsetstrokecolor{currentstroke}%
 \pgfsetdash{}{0pt}%
-\pgfsys@defobject{currentmarker}{\pgfqpoint{-0.183733in}{-0.183733in}}{\pgfqpoint{0.183733in}{0.183733in}}{%
-\pgfpathmoveto{\pgfqpoint{-0.183733in}{-0.183733in}}%
-\pgfpathlineto{\pgfqpoint{0.183733in}{-0.183733in}}%
-\pgfpathlineto{\pgfqpoint{0.183733in}{0.183733in}}%
-\pgfpathlineto{\pgfqpoint{-0.183733in}{0.183733in}}%
-\pgfpathlineto{\pgfqpoint{-0.183733in}{-0.183733in}}%
+\pgfsys@defobject{currentmarker}{\pgfqpoint{-0.155282in}{-0.155282in}}{\pgfqpoint{0.155282in}{0.155282in}}{%
+\pgfpathmoveto{\pgfqpoint{-0.155282in}{-0.155282in}}%
+\pgfpathlineto{\pgfqpoint{0.155282in}{-0.155282in}}%
+\pgfpathlineto{\pgfqpoint{0.155282in}{0.155282in}}%
+\pgfpathlineto{\pgfqpoint{-0.155282in}{0.155282in}}%
+\pgfpathlineto{\pgfqpoint{-0.155282in}{-0.155282in}}%
 \pgfpathclose%
 \pgfusepath{stroke,fill}%
 }%
@@ -400,12 +400,12 @@
 \definecolor{currentstroke}{rgb}{0.000000,0.000000,0.000000}%
 \pgfsetstrokecolor{currentstroke}%
 \pgfsetdash{}{0pt}%
-\pgfsys@defobject{currentmarker}{\pgfqpoint{-0.183733in}{-0.183733in}}{\pgfqpoint{0.183733in}{0.183733in}}{%
-\pgfpathmoveto{\pgfqpoint{-0.183733in}{-0.183733in}}%
-\pgfpathlineto{\pgfqpoint{0.183733in}{-0.183733in}}%
-\pgfpathlineto{\pgfqpoint{0.183733in}{0.183733in}}%
-\pgfpathlineto{\pgfqpoint{-0.183733in}{0.183733in}}%
-\pgfpathlineto{\pgfqpoint{-0.183733in}{-0.183733in}}%
+\pgfsys@defobject{currentmarker}{\pgfqpoint{-0.155282in}{-0.155282in}}{\pgfqpoint{0.155282in}{0.155282in}}{%
+\pgfpathmoveto{\pgfqpoint{-0.155282in}{-0.155282in}}%
+\pgfpathlineto{\pgfqpoint{0.155282in}{-0.155282in}}%
+\pgfpathlineto{\pgfqpoint{0.155282in}{0.155282in}}%
+\pgfpathlineto{\pgfqpoint{-0.155282in}{0.155282in}}%
+\pgfpathlineto{\pgfqpoint{-0.155282in}{-0.155282in}}%
 \pgfpathclose%
 \pgfusepath{stroke,fill}%
 }%
@@ -418,7 +418,7 @@
 \definecolor{textcolor}{rgb}{0.000000,0.000000,0.000000}%
 \pgfsetstrokecolor{textcolor}%
 \pgfsetfillcolor{textcolor}%
-\pgftext[x=0.276042in,y=0.728125in,,]{\color{textcolor}{\rmfamily\fontsize{8.000000}{9.600000}\selectfont\catcode`\^=\active\def^{\ifmmode\sp\else\^{}\fi}\catcode`\%=\active\def%{\%}$x$}}%
+\pgftext[x=0.276042in,y=0.728125in,,]{\color{textcolor}{\rmfamily\fontsize{8.000000}{9.600000}\selectfont\catcode`\^=\active\def^{\ifmmode\sp\else\^{}\fi}\catcode`\%=\active\def%{\%}$\mathbf{x}$}}%
 \end{pgfscope}%
 \begin{pgfscope}%
 \definecolor{textcolor}{rgb}{0.000000,0.000000,0.000000}%
@@ -448,7 +448,7 @@
 \definecolor{textcolor}{rgb}{0.000000,0.000000,0.000000}%
 \pgfsetstrokecolor{textcolor}%
 \pgfsetfillcolor{textcolor}%
-\pgftext[x=2.536458in,y=0.728125in,,]{\color{textcolor}{\rmfamily\fontsize{8.000000}{9.600000}\selectfont\catcode`\^=\active\def^{\ifmmode\sp\else\^{}\fi}\catcode`\%=\active\def%{\%}$f(x)$}}%
+\pgftext[x=2.536458in,y=0.728125in,,]{\color{textcolor}{\rmfamily\fontsize{8.000000}{9.600000}\selectfont\catcode`\^=\active\def^{\ifmmode\sp\else\^{}\fi}\catcode`\%=\active\def%{\%}$f(\mathbf{x})$}}%
 \end{pgfscope}%
 \end{pgfpicture}%
 \makeatother%
