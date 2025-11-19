@@ -1,0 +1,12 @@
+\begin{tabular}{lcccc}
+\toprule
+model_name & l2_error & mean_pde_residual & iterations_per_sec & elapsed_time_min & fourier_features & n_fourier_features & sigma & net_type & mlp_type & activations & initialization & n_hidden & rank & num_domain & learning_rates & n_iters & seed & restored_params & pde_coefficient & SA & SA_init & SA_update_factor & n_domain \\
+\midrule
+SPINN & 8.39e-01 & 9.01e-02 & 6.23e+02 & 1.60e+00 & False & 128 & 10 & SPINN & mlp & sin & Glorot normal & 3 & 64 & 22500 & [0.001, 0.0001, 1e-05] & 20000 & 0 & NaN & 1.00e-03 & False & constant & -1.00e+00 & 22500 \\
+PINN & 2.23e-01 & 3.55e-02 & 1.03e+03 & 9.69e-01 & False & 256 & 10 & PINN & mlp & sin & Glorot normal & 3 & 64 & 22500 & [0.001, 0.0001, 1e-05] & 20000 & 0 & NaN & 1.00e-03 & False & constant & -1.00e+00 & 22500 \\
+SPINN-mod & 1.13e-01 & 1.22e-02 & 3.71e+02 & 2.70e+00 & False & 128 & 10 & SPINN & mlp_mod & sin & Glorot normal & 3 & 64 & 22500 & [0.001, 0.0001, 1e-05] & 20000 & 0 & NaN & 1.00e-03 & False & constant & -1.00e+00 & 22500 \\
+SPINN + FF & 3.95e-03 & 1.67e-03 & 5.42e+02 & 1.84e+00 & True & 128 & 10 & SPINN & mlp & sin & Glorot normal & 3 & 64 & 22500 & [0.001, 0.0001, 1e-05] & 20000 & 0 & NaN & 1.00e-03 & False & constant & -1.00e+00 & 22500 \\
+SPINN-mod + FF & 9.84e-04 & 1.26e-03 & 4.20e+02 & 2.38e+00 & True & 128 & 10 & SPINN & mlp_mod & sin & Glorot normal & 3 & 64 & 22500 & [0.001, 0.0001, 1e-05] & 20000 & 0 & NaN & 1.00e-03 & False & constant & -1.00e+00 & 22500 \\
+PINN + FF & 2.39e-04 & 9.10e-04 & 2.62e+02 & 3.82e+00 & True & 256 & 10 & PINN & mlp & sin & Glorot normal & 3 & 64 & 22500 & [0.001, 0.0001, 1e-05] & 20000 & 0 & NaN & 1.00e-03 & False & constant & -1.00e+00 & 22500 \\
+\bottomrule
+\end{tabular}

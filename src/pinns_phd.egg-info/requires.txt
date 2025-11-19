@@ -1,0 +1,12 @@
+numpy
+scipy
+matplotlib
+jax
+jaxlib
+flax
+optax
+deepxde
+pandas
+scienceplots
+wandb
+jupyter

@@ -1,0 +1,12 @@
+README.md
+pyproject.toml
+setup.cfg
+src/examples/__init__.py
+src/examples/allen_cahn.py
+src/examples/data/Allen_Cahn.mat
+src/examples/data/__init__.py
+src/pinns_phd.egg-info/PKG-INFO
+src/pinns_phd.egg-info/SOURCES.txt
+src/pinns_phd.egg-info/dependency_links.txt
+src/pinns_phd.egg-info/requires.txt
+src/pinns_phd.egg-info/top_level.txt

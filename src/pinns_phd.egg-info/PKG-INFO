@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: pinns-phd
+Version: 0.0.0
+Summary: PINN thesis codebase and examples
+Author: Damien Bonnet-Eymard
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: matplotlib
+Requires-Dist: jax
+Requires-Dist: jaxlib
+Requires-Dist: flax
+Requires-Dist: optax
+Requires-Dist: deepxde
+Requires-Dist: pandas
+Requires-Dist: scienceplots
+Requires-Dist: wandb
+Requires-Dist: jupyter
