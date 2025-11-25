@@ -1,10 +1,13 @@
 README.md
 pyproject.toml
 setup.cfg
-src/examples/__init__.py
-src/examples/allen_cahn.py
-src/examples/data/Allen_Cahn.mat
-src/examples/data/__init__.py
+src/phd/__init__.py
+src/phd/config/__init__.py
+src/phd/config/plotting.py
+src/phd/data/Allen_Cahn.mat
+src/phd/data/__init__.py
+src/phd/models/__init__.py
+src/phd/models/allen_cahn.py
 src/pinns_phd.egg-info/PKG-INFO
 src/pinns_phd.egg-info/SOURCES.txt
 src/pinns_phd.egg-info/dependency_links.txt
