@@ -5,9 +5,15 @@ import jax.numpy as jnp
 import time
 import os
 import json
+import matplotlib.pyplot as plt
 from phd.models.cm.utils import transform_coords, linear_elasticity_pde
 from phd.utils import ResultsManager
-from phd.models.cm.plot_util import animate, init_fields
+from phd.config import get_current_config
+from phd.models.cm.plot_util import (
+    init_figure, init_metrics, update_metrics, 
+    init_parameter_evolution, update_parameter_evolution, 
+    plot_field, add_colorbar, make_formatter
+)
 
 DEFAULT_CONFIG = {
     "task": "forward", # "forward" or "inverse"
@@ -328,8 +334,9 @@ def get_plot_data(config, model, n_points=100):
     
     return X, Y, exact, pred
 
-def get_animation_data(run_dir_or_data):
+def get_animation_data(run_dir_or_data, plot_fields=None):
     # 1. Parse Data
+    vars_history = {}
     if isinstance(run_dir_or_data, dict):
         # In-memory results
         results = run_dir_or_data
@@ -337,6 +344,8 @@ def get_animation_data(run_dir_or_data):
         # Ensure steps are numpy array
         steps = np.array(results["losshistory"].steps)
         loss_history = np.array(results["losshistory"].loss_test)
+        if loss_history.ndim > 1:
+            loss_history = np.sum(loss_history, axis=1)
         
         fields_dict = {}
         field_steps = steps
@@ -346,10 +355,27 @@ def get_animation_data(run_dir_or_data):
             history = saver.history
             if history:
                 field_steps = np.array([h[0] for h in history])
-                # history is list of (step, {name: array})
+                # Align loss_history with field_steps
+                loss_indices = np.searchsorted(steps, field_steps)
+                loss_indices = np.clip(loss_indices, 0, len(loss_history) - 1)
+                loss_history = loss_history[loss_indices]
+                steps = field_steps
+                
                 first_snapshot = history[0][1]
                 for name in first_snapshot.keys():
                     fields_dict[name] = np.array([h[1][name] for h in history])
+        
+        # Try to load variables from disk if available
+        run_dir = Path(results["run_dir"])
+        var_file = run_dir / "variables.dat"
+        if var_file.exists():
+            try:
+                var_data = np.loadtxt(var_file)
+                if var_data.ndim == 1: var_data = var_data.reshape(1, -1)
+                vars_history["lambda"] = {"steps": var_data[:, 0], "values": var_data[:, 1]}
+                vars_history["mu"] = {"steps": var_data[:, 0], "values": var_data[:, 2]}
+            except: pass
+
     else:
         # Disk loading
         from phd.utils import ResultsManager
@@ -358,6 +384,8 @@ def get_animation_data(run_dir_or_data):
         rm = ResultsManager(base_dir=run_dir.parent, run_name=run_dir.name)
         config = rm.load_config()
         steps, loss_history = rm.load_loss_history()
+        if loss_history.ndim > 1:
+            loss_history = np.sum(loss_history, axis=1)
         
         # Load fields from disk
         fields_dir = run_dir / "fields"
@@ -370,21 +398,33 @@ def get_animation_data(run_dir_or_data):
                 field_steps = np.loadtxt(steps_file, dtype=int)
                 if field_steps.ndim == 0: field_steps = np.array([field_steps])
                 
-                # Load first to get names
+                loss_indices = np.searchsorted(steps, field_steps)
+                loss_indices = np.clip(loss_indices, 0, len(loss_history) - 1)
+                loss_history = loss_history[loss_indices]
+                steps = field_steps
+                
                 first_file = fields_dir / f"fields_{field_steps[0]}.npz"
                 with np.load(first_file) as f:
-                    field_names = list(f.keys())
-                    n_points = f[field_names[0]].shape[0]
+                    field_names_disk = list(f.keys())
+                    n_points = f[field_names_disk[0]].shape[0]
                 
-                # Init arrays
-                for name in field_names:
+                for name in field_names_disk:
                     fields_dict[name] = np.zeros((len(field_steps), n_points))
                 
-                # Load all
                 for i, step in enumerate(field_steps):
                     with np.load(fields_dir / f"fields_{step}.npz") as f:
-                        for name in field_names:
+                        for name in field_names_disk:
                             fields_dict[name][i] = f[name]
+                            
+        # Load variables
+        var_file = run_dir / "variables.dat"
+        if var_file.exists():
+            try:
+                var_data = np.loadtxt(var_file)
+                if var_data.ndim == 1: var_data = var_data.reshape(1, -1)
+                vars_history["lambda"] = {"steps": var_data[:, 0], "values": var_data[:, 1]}
+                vars_history["mu"] = {"steps": var_data[:, 0], "values": var_data[:, 2]}
+            except: pass
 
     # 2. Prepare Plot Data
     if fields_dict:
@@ -396,17 +436,22 @@ def get_animation_data(run_dir_or_data):
     x_lin = np.linspace(0, 1, ngrid)
     Xmesh, Ymesh = np.meshgrid(x_lin, x_lin, indexing="ij")
     
-    # Metrics
-    # Align metrics with field steps if possible
+    if len(loss_history) != len(steps):
+        loss_history = loss_history[:len(steps)]
     metrics = {"Test Loss": loss_history}
-    if len(loss_history) != len(field_steps):
-        # Simple truncation or padding if close, otherwise just warn/ignore
-        # For now, assume they are aligned or plot_util handles it (it doesn't fully yet)
-        # Let's just use field_steps as the master steps
-        pass
 
-    # Fields Init Structure
-    field_names = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
+    all_field_names = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
+    if plot_fields is None:
+        field_names = all_field_names
+    else:
+        field_names = [f for f in plot_fields if f in all_field_names]
+    
+    LATEX_FIELD_NAMES = {
+        "Ux": r"$u_x$", "Uy": r"$u_y$",
+        "Exx": r"$\varepsilon_{xx}$", "Eyy": r"$\varepsilon_{yy}$", "Exy": r"$\varepsilon_{xy}$",
+        "Sxx": r"$\sigma_{xx}$", "Syy": r"$\sigma_{yy}$", "Sxy": r"$\sigma_{xy}$"
+    }
+    
     fields_init = {}
     
     lmbd, mu, Q = config["lmbd"], config["mu"], config["Q"]
@@ -425,9 +470,7 @@ def get_animation_data(run_dir_or_data):
     for i, name in enumerate(field_names):
         fields_init[name] = {
             "data": [exact_vals[:, i].reshape(ngrid, ngrid)], # Reference
-            "title": name,
-            "cmap": "viridis",
-            "abs": False
+            "title": LATEX_FIELD_NAMES.get(name, name),
         }
         
     def get_snapshot(idx):
@@ -440,27 +483,179 @@ def get_animation_data(run_dir_or_data):
                 snapshot[name] = [ref, pred, err]
         return snapshot
         
-    return field_steps, metrics, fields_init, get_snapshot, (Xmesh, Ymesh)
+    return steps, metrics, vars_history, fields_init, get_snapshot, (Xmesh, Ymesh), config
 
-def plot_results(fig, ax, config, model, rows_title=None):
-    X, Y, exact, pred = get_plot_data(config, model)
+def plot_results(run_dir_or_data, get_data_fn=None, iteration=-1, **opts):
+    """
+    Plot results with configurable layout.
     
-    # Fields to plot: Ux, Uy, Sxx, Syy, Sxy
-    field_names = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
-    fields = {}
+    Options (pass as kwargs or in opts dict):
+        fields: list of field names to plot, e.g. ["Ux", "Uy"]. None = all.
+        show_metrics: bool, whether to show metrics column (default True).
+        show_residual: bool, whether to show residual row (default True).
+        dpi: figure dpi (default 100).
+    """
+    # Unpack options with defaults
+    o = {"fields": None, "show_metrics": True, "show_residual": True, "dpi": 100, **opts}
     
-    for i, name in enumerate(field_names):
-        fields[name] = {
-            "data": [exact[:, i].reshape(X.shape), pred[:, i].reshape(X.shape), (pred[:, i] - exact[:, i]).reshape(X.shape)],
-            "title": name,
-            "cmap": "viridis",
-            "abs": False
-        }
+    if get_data_fn is None: get_data_fn = get_animation_data
+    steps, metrics, vars_history, fields_init, get_snapshot_fn, (mx, my), config = get_data_fn(run_dir_or_data, plot_fields=o["fields"])
+    if iteration == -1: iteration = len(steps) - 1
+    current_step = steps[iteration]
     
-    if rows_title is None:
-        rows_title = ["Model", "Error"]
+    field_names = list(fields_init.keys())
+    n_fields = len(field_names)
+    n_rows = 2 + int(o["show_residual"])  # Ref + Pred + optional Residual
+    n_cols = int(o["show_metrics"]) + n_fields
+    
+    figwidth = get_current_config().page_width * (n_cols / 4) # 4 columns fit in page width
+    figsize = (figwidth, figwidth * (0.1 + n_rows / n_cols))
+    fig, ax = init_figure(n_rows, n_cols, dpi=o["dpi"], figsize=figsize)
+    col_offset = int(o["show_metrics"])  # field columns start after metrics column
+    
+    # --- Column 0: Variables & Metrics (if enabled) ---
+    if o["show_metrics"]:
+        lmbd_true, mu_true = config.get("lmbd", 1.0), config.get("mu", 0.5)
+        get_hist = lambda name: (vars_history[name]["steps"], vars_history[name]["values"]) if name in vars_history else (steps, np.zeros_like(steps))
         
-    init_fields(fig, ax, fields, X, Y, rows_title)
+        for row, (var, true_val, lbl, clr) in enumerate([("lambda", lmbd_true, r"$\lambda$", 'b'), ("mu", mu_true, r"$\mu$", 'r')]):
+            ax_var = ax[row, 0]
+            if var not in vars_history:
+                ax_var.set_visible(False)
+            else:
+                s, v = get_hist(var)
+                init_parameter_evolution(ax_var, s, v, true_val=true_val, label=lbl, color=clr)
+                update_parameter_evolution(current_step, {"line": ax_var.lines[1], "scatter": ax_var.collections[0], "data": v, "steps": s})
+
+        # Metrics in last row of column 0
+        ax_loss = ax[n_rows - 1, 0]
+        metrics_artists = init_metrics(ax_loss, steps, metrics)
+        update_metrics(current_step, metrics_artists)
+        ax_loss.set_aspect(1.0)
+    # --- Field columns ---
+    snapshot = get_snapshot_fn(iteration)
+    
+    for i, fname in enumerate(field_names):
+        col = col_offset + i
+        data_list = snapshot[fname]  # [ref, pred, err]
+        title = fields_init[fname].get("title", fname)
+        title_pred = title[:-1] + "^*$" if title.endswith("$") else title + "*"
+        
+        # Row 0: Reference
+        im_ref = plot_field(ax[0, col], mx, my, data_list[0], title=title, cmap="viridis")
+        add_colorbar(fig, ax[0, col], im_ref, location="top", shift=0.05)
+        
+        # Row 1: Prediction
+        plot_field(ax[1, col], mx, my, data_list[1], title=title_pred, cmap="viridis", vmin=im_ref.get_clim()[0], vmax=im_ref.get_clim()[1])
+        
+        # Row 2: Error (if enabled)
+        if o["show_residual"]:
+            title_err = rf"$\|{title[1:-1]} - {title_pred[1:-1]}\|$"
+            im_err = plot_field(ax[2, col], mx, my, data_list[2], title=title_err, cmap="coolwarm")
+            lim = np.nanmax(np.abs(data_list[2]))
+            im_err.set_clim(-lim, lim)
+            add_colorbar(fig, ax[2, col], im_err, location="bottom", shift=0.02)
+    
+    return fig
+
+def animate(run_dir, output_file, get_data_fn=None, fps=10):
+    import matplotlib.animation as animation
+    if get_data_fn is None: get_data_fn = get_animation_data
+    
+    steps, metrics, vars_history, fields_init, get_snapshot_fn, (mx, my), config = get_data_fn(run_dir)
+    
+    field_names = list(fields_init.keys())
+    n_fields = len(field_names)
+    n_cols = 1 + n_fields
+    n_rows = 3
+    
+    fig, ax = init_figure(n_rows, n_cols)
+    
+    # Init Artists
+    lmbd_true = config.get("lmbd", 1.0)
+    mu_true = config.get("mu", 0.5)
+    
+    def get_hist(name):
+        if name in vars_history:
+            return vars_history[name]["steps"], vars_history[name]["values"]
+        return steps, np.zeros_like(steps)
+        
+    # Lambda
+    ax_lmbd = ax[0, 0]
+    s_l, v_l = get_hist("lambda")
+    art_lmbd = init_parameter_evolution(ax_lmbd, s_l, v_l, true_val=lmbd_true, label=r"$\lambda$", color='b')
+    
+    # Mu
+    ax_mu = ax[1, 0]
+    s_m, v_m = get_hist("mu")
+    art_mu = init_parameter_evolution(ax_mu, s_m, v_m, true_val=mu_true, label=r"$\mu$", color='r')
+    
+    # Metrics
+    ax_loss = ax[2, 0]
+    art_metrics = init_metrics(ax_loss, steps, metrics)
+    
+    # Fields
+    art_fields = []
+    # Init with first frame to get colorbars right
+    snapshot0 = get_snapshot_fn(0)
+    
+    for i, fname in enumerate(field_names):
+        col = i + 1
+        data_list = snapshot0[fname]
+        info = fields_init[fname]
+        title = info.get("title", fname)
+        
+        # Ref
+        ax_ref = ax[0, col]
+        im_ref = plot_field(ax_ref, mx, my, data_list[0], title=title, cmap="viridis")
+        add_colorbar(fig, ax_ref, im_ref, location="top")
+        
+        # Pred
+        ax_pred = ax[1, col]
+        im_pred = plot_field(ax_pred, mx, my, data_list[1], cmap="viridis", vmin=im_ref.get_clim()[0], vmax=im_ref.get_clim()[1])
+        
+        # Err
+        ax_err = ax[2, col]
+        im_err = plot_field(ax_err, mx, my, data_list[2], cmap="coolwarm")
+        lim = np.nanmax(np.abs(data_list[2]))
+        im_err.set_clim(-lim, lim)
+        add_colorbar(fig, ax_err, im_err, location="bottom")
+        
+        art_fields.append({
+            "im_ref": im_ref, "im_pred": im_pred, "im_err": im_err,
+            "name": fname
+        })
+        
+    def update(frame_idx):
+        current_step = steps[frame_idx]
+        plt.suptitle(f"Step: {current_step}")
+        
+        update_parameter_evolution(current_step, art_lmbd)
+        update_parameter_evolution(current_step, art_mu)
+        update_metrics(current_step, art_metrics)
+        
+        snapshot = get_snapshot_fn(frame_idx)
+        for i, art in enumerate(art_fields):
+            fname = art["name"]
+            data_list = snapshot[fname]
+            
+            # Ref (static usually, but maybe not?)
+            # art["im_ref"].set_array(data_list[0].ravel()) 
+            
+            # Pred
+            art["im_pred"].set_array(data_list[1].ravel())
+            
+            # Err
+            art["im_err"].set_array(data_list[2].ravel())
+            lim = np.nanmax(np.abs(data_list[2]))
+            art["im_err"].set_clim(-lim, lim)
+            
+        return []
+
+    anim = animation.FuncAnimation(fig, update, frames=len(steps), interval=1000/fps, repeat=False)
+    anim.save(output_file, writer='ffmpeg', fps=fps)
+    plt.close(fig)
+
 
 if __name__ == "__main__":
     import sys

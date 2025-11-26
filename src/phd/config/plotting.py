@@ -58,6 +58,7 @@ class PlottingConfig:
         # Scale based on figure size
         fig_width = plt.rcParams.get("figure.figsize", [6.4, 4.8])[0]
         s = self.page_width / fig_width
+        s_tick = s * 0.5  # ticks scaling
         s = s * 0.25  # personal preference scaling
         
         # Scale each parameter from its default
@@ -65,14 +66,14 @@ class PlottingConfig:
             "lines.linewidth": defaults['lines.linewidth'] * s,
             "lines.markersize": defaults['lines.markersize'] * s,
             "axes.linewidth": defaults['axes.linewidth'] * s,
-            # "xtick.major.width": defaults['xtick.major.width'] * s,
-            # "ytick.major.width": defaults['ytick.major.width'] * s,
-            # "xtick.minor.width": defaults['xtick.minor.width'] * s,
-            # "ytick.minor.width": defaults['ytick.minor.width'] * s,
-            # "xtick.major.size": defaults['xtick.major.size'] * s,
-            # "ytick.major.size": defaults['ytick.major.size'] * s,
-            # "xtick.minor.size": defaults['xtick.minor.size'] * s,
-            # "ytick.minor.size": defaults['ytick.minor.size'] * s,
+            "xtick.major.width": defaults['xtick.major.width'] * s_tick,
+            "ytick.major.width": defaults['ytick.major.width'] * s_tick,
+            "xtick.minor.width": defaults['xtick.minor.width'] * s_tick,
+            "ytick.minor.width": defaults['ytick.minor.width'] * s_tick,
+            "xtick.major.size": defaults['xtick.major.size'] * s_tick,
+            "ytick.major.size": defaults['ytick.major.size'] * s_tick,
+            "xtick.minor.size": defaults['xtick.minor.size'] * s_tick,
+            "ytick.minor.size": defaults['ytick.minor.size'] * s_tick,
             "grid.linewidth": defaults['grid.linewidth'] * s,
         })
     
