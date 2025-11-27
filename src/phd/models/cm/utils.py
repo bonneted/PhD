@@ -93,3 +93,82 @@ def linear_elasticity_pde(x, f, lmbd, mu, fx, fy, net_type="SPINN"):
     stress_xy = S_xy - f[:, 4:5]
 
     return [momentum_x, momentum_y, stress_x, stress_y, stress_xy]
+
+class VariableValue(dde.callbacks.Callback):
+    """Get the variable values.
+
+    Args:
+        var_list: A `TensorFlow Variable <https://www.tensorflow.org/api_docs/python/tf/Variable>`_
+            or a list of TensorFlow Variable.
+        period (int): Interval (number of epochs) between checking values.
+        filename (string): Output the values to the file `filename`.
+            The file is kept open to allow instances to be re-used.
+            If ``None``, output to the screen.
+        precision (int): The precision of variables to display.
+        scale_factors (list): Optional list of scaling factors to apply to each variable.
+            This is useful when variables are trained with a scaling factor (e.g., variable_training_factor).
+    """
+
+    def __init__(self, var_list, period=1, filename=None, precision=2, scale_factors=None):
+        super().__init__()
+        self.var_list = var_list if isinstance(var_list, list) else [var_list]
+        self.period = period
+        self.precision = precision
+        self.filename = filename
+        self.scale_factors = scale_factors if scale_factors is not None else [1.0] * len(self.var_list)
+
+        self.file = None
+        if filename:
+            self.file = open(filename, "w", buffering=1)
+            
+        self.value = None
+        self.epochs_since_last = 0
+        self.history = []
+
+    def on_train_begin(self):
+        if dde.backend.backend_name == "tensorflow.compat.v1":
+            raw_values = self.model.sess.run(self.var_list)
+        elif dde.backend.backend_name == "tensorflow":
+            raw_values = [var.numpy() for var in self.var_list]
+        elif dde.backend.backend_name in ["pytorch", "paddle"]:
+            raw_values = [var.detach().item() for var in self.var_list]
+        elif dde.backend.backend_name == "jax":
+            raw_values = [var.value for var in self.var_list]
+
+        # Convert to standard python types and apply scale factors
+        self.value = []
+        for v, scale in zip(raw_values, self.scale_factors):
+            if hasattr(v, "item"):
+                self.value.append(float(v.item()) * scale)
+            elif hasattr(v, "__array__"):  # numpy or jax array
+                val = np.array(v).item() if np.ndim(v) == 0 else np.array(v)
+                self.value.append(float(val) * scale if np.isscalar(val) else val * scale)
+            else:
+                self.value.append(float(v) * scale)
+
+        # Store in history
+        self.history.append([self.model.train_state.epoch] + self.value)
+
+        if self.file:
+            print(
+                self.model.train_state.epoch,
+                dde.utils.list_to_str(self.value, precision=self.precision),
+                file=self.file,
+            )
+            self.file.flush()
+
+    def on_epoch_end(self):
+        self.epochs_since_last += 1
+        if self.epochs_since_last >= self.period:
+            self.epochs_since_last = 0
+            self.on_train_begin()
+
+    def on_train_end(self):
+        if not self.epochs_since_last == 0:
+            self.on_train_begin()
+        if self.file:
+            self.file.close()
+
+    def get_value(self):
+        """Return the variable values (already scaled)."""
+        return self.value

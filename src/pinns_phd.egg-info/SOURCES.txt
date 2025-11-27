@@ -8,8 +8,16 @@ src/phd/data/Allen_Cahn.mat
 src/phd/data/__init__.py
 src/phd/models/__init__.py
 src/phd/models/allen_cahn.py
+src/phd/models/cm/__init__.py
+src/phd/models/cm/analytical_plate.py
+src/phd/models/cm/plot_util.py
+src/phd/models/cm/plot_util_old.py
+src/phd/models/cm/utils.py
+src/phd/utils/__init__.py
+src/phd/utils/results_manager.py
 src/pinns_phd.egg-info/PKG-INFO
 src/pinns_phd.egg-info/SOURCES.txt
 src/pinns_phd.egg-info/dependency_links.txt
 src/pinns_phd.egg-info/requires.txt
 src/pinns_phd.egg-info/top_level.txt
+tests/test_models.py

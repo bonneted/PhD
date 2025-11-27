@@ -1,3 +1,5 @@
 notebooks/results_notebook/*
+notebooks/analytical_plate_results/
 *.pyc
 wandb/
+src/pinns_phd.egg-info/

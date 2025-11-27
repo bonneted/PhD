@@ -37,21 +37,41 @@ def _set_smart_ticks(cb, vmin, vmax, max_ticks=5):
     ticks = np.arange(t0, t1 + step/2, step)
     cb.set_ticks(ticks[(ticks >= vmin) & (ticks <= vmax)])
 
-def init_metrics(ax, steps, metrics_dict, xlabel="Iterations", log_scale=True):
+def init_metrics(ax, steps, metrics_dict, selected_metrics=None, xlabel="Iterations", log_scale=True, use_latex_names=True):
     """
     Initialize metrics plot (e.g. Loss history).
     """
+    LATEX_METRICS_NAMES = {
+        "Residual": r"Rel. $L_2$ Error",
+        "PDE Loss": r"$\mathcal{L}_{\text{PDE}}$",
+        "Material Loss": r"$\mathcal{L}_{\text{mat}}$",
+        "DIC Loss": r"$\mathcal{L}_{\text{DIC}}$",
+        "Total Loss": r"$\mathcal{L}_{\text{total}}$",
+    }
     if log_scale: ax.set_yscale('log')
     ax.set_xlabel(xlabel)
     artists = {}
     colors_list = plt.cm.tab10.colors
-    for i, (name, data) in enumerate(metrics_dict.items()):
+    if selected_metrics is None:
+        metric_items = list(metrics_dict.items())
+    else:
+        metric_items = [(name, metrics_dict[name]) for name in selected_metrics if name in metrics_dict]
+    if not metric_items:
+        metric_items = list(metrics_dict.items())
+    num_metrics = len(metric_items)
+    for i, (name, data) in enumerate(metric_items):
+        name_str = LATEX_METRICS_NAMES[name] if use_latex_names and name in LATEX_METRICS_NAMES else name
         c = colors_list[i % len(colors_list)]
         ax.plot(steps, data, alpha=0.2, color=c)
-        line, = ax.plot([], [], color=c, label=name, zorder=3)
+        label = name_str if num_metrics > 1 else None
+        line, = ax.plot([], [], color=c, label=label, zorder=3)
         scatter = ax.scatter([], [], c='k', zorder=4, s=10)
         artists[name] = {"line": line, "scatter": scatter, "data": data, "steps": steps}
-    ax.legend()
+    if num_metrics > 1:
+        ax.legend()
+    elif num_metrics == 1:
+        label = LATEX_METRICS_NAMES[metric_items[0][0]] if use_latex_names and metric_items[0][0] in LATEX_METRICS_NAMES else metric_items[0][0]
+        ax.set_title(label)
     return artists
 
 def update_metrics(current_step, artists):
