@@ -37,12 +37,15 @@ def _set_smart_ticks(cb, vmin, vmax, max_ticks=5):
     ticks = np.arange(t0, t1 + step/2, step)
     cb.set_ticks(ticks[(ticks >= vmin) & (ticks <= vmax)])
 
-def init_metrics(ax, steps, metrics_dict, selected_metrics=None, xlabel="Iterations", log_scale=True, use_latex_names=True):
+def init_metrics(ax, steps, metrics_dict, selected_metrics=None, xlabel="Iterations", log_scale=True, use_latex_names=True, use_title=True):
     """
     Initialize metrics plot (e.g. Loss history).
+    
+    Args:
+        use_title: If True, use title for single metric. If False, use legend label.
     """
     LATEX_METRICS_NAMES = {
-        "Residual": r"Rel. $L_2$ Error",
+        "Residual": r"$E_{L_2}$",
         "PDE Loss": r"$\mathcal{L}_{\text{PDE}}$",
         "Material Loss": r"$\mathcal{L}_{\text{mat}}$",
         "DIC Loss": r"$\mathcal{L}_{\text{DIC}}$",
@@ -62,16 +65,19 @@ def init_metrics(ax, steps, metrics_dict, selected_metrics=None, xlabel="Iterati
     for i, (name, data) in enumerate(metric_items):
         name_str = LATEX_METRICS_NAMES[name] if use_latex_names and name in LATEX_METRICS_NAMES else name
         c = colors_list[i % len(colors_list)]
+        # Background faded curve
         ax.plot(steps, data, alpha=0.2, color=c)
-        label = name_str if num_metrics > 1 else None
-        line, = ax.plot([], [], color=c, label=label, zorder=3)
-        scatter = ax.scatter([], [], c='k', zorder=4, s=10)
-        artists[name] = {"line": line, "scatter": scatter, "data": data, "steps": steps}
-    if num_metrics > 1:
-        ax.legend()
-    elif num_metrics == 1:
-        label = LATEX_METRICS_NAMES[metric_items[0][0]] if use_latex_names and metric_items[0][0] in LATEX_METRICS_NAMES else metric_items[0][0]
-        ax.set_title(label)
+        # Line with label (use line for legend, not scatter)
+        line, = ax.plot([], [], color=c, label=name_str, zorder=3)
+        # Scatter marker (no label - line handles the legend)
+        scatter = ax.scatter([], [], c='k', zorder=4)
+        artists[name] = {"line": line, "scatter": scatter, "data": data, "steps": steps, "name_str": name_str}
+    
+    if num_metrics > 1 or not use_title:
+        ax.legend(handlelength=1).get_frame().set_linewidth(0.5)
+    elif num_metrics == 1 and use_title:
+        name_str = LATEX_METRICS_NAMES[metric_items[0][0]] if use_latex_names and metric_items[0][0] in LATEX_METRICS_NAMES else metric_items[0][0]
+        ax.set_title(name_str)
     return artists
 
 def update_metrics(current_step, artists):
@@ -88,27 +94,36 @@ def update_metrics(current_step, artists):
         if np.isscalar(data_val):
             art["scatter"].set_offsets([[steps[idx], data_val]])
         else:
-            art["scatter"].set_offsets([[steps[idx], float(data_val.flat[0])]])
+            val = float(data_val.flat[0])
+            art["scatter"].set_offsets([[steps[idx], val]])
 
-def init_parameter_evolution(ax, steps, history, true_val=None, label="Param", color='b', xlabel="Steps"):
+def init_parameter_evolution(ax, steps, history, true_val=None, label="Param", color='b', xlabel="Steps", show_xlabel=True):
     """
     Initialize parameter evolution plot.
+    Uses scatter marker for labelling with current value.
+    
+    Args:
+        show_xlabel: If True, show x-axis label. Set to False for compact layouts.
     """
     if true_val is not None:
-        ax.axhline(y=true_val, linestyle='--', color=color, alpha=0.5, label=f"{label} (True)")
+        ax.axhline(y=true_val, linestyle='--', color=color, alpha=0.5)
     
     ax.plot(steps, history, alpha=0.2, color=color)
-    line, = ax.plot([], [], color=color, label=f"{label} (Pred)", zorder=3)
-    scatter = ax.scatter([], [], c='k', zorder=4, s=10)
+    line, = ax.plot([], [], color=color, zorder=3)
+    # Scatter with value in label
+    scatter = ax.scatter([], [], c='k', zorder=4, 
+                         label=f"{label} = {history[0]:.3f}")
     
-    ax.set_xlabel(xlabel)
-    ax.legend()
+    if show_xlabel:
+        ax.set_xlabel(xlabel)
+    ax.legend(handlelength=1).get_frame().set_linewidth(0.5)
     
     return {"line": line, "scatter": scatter, "data": history, "steps": steps, "label": label}
 
 def update_parameter_evolution(current_step, artist):
     """
     Update parameter evolution plot.
+    Updates the scatter label with current value.
     """
     steps, data = artist["steps"], artist["data"]
     idx = np.searchsorted(steps, current_step)
@@ -116,7 +131,11 @@ def update_parameter_evolution(current_step, artist):
     
     artist["line"].set_data(steps[:idx+1], data[:idx+1])
     artist["scatter"].set_offsets([[steps[idx], data[idx]]])
-    # Optional: Update label if needed
+    artist["scatter"].set_label(f"{artist['label']} = {data[idx]:.3f}")
+    
+    # Update legend
+    ax = artist["scatter"].axes
+    ax.legend(handlelength=1).get_frame().set_linewidth(0.5)
 
 def plot_field(ax, X, Y, data, title=None, cmap='viridis', vmin=None, vmax=None):
     """
