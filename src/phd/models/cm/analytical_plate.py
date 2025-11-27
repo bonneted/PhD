@@ -1,10 +1,13 @@
 import deepxde as dde
 import numpy as np
+import jax
 import jax.numpy as jnp
 import time
 from pathlib import Path
 import matplotlib.pyplot as plt
-from phd.models.cm.utils import transform_coords, linear_elasticity_pde, VariableValue
+from phd.models.cm.utils import (
+    transform_coords, linear_elasticity_pde, VariableValue, VariableArray
+)
 from phd.utils import ResultsManager
 from phd.config import get_current_config
 from phd.models.cm.plot_util import (
@@ -20,11 +23,11 @@ DEFAULT_CONFIG = {
     "activations": "tanh",
     "initialization": "Glorot uniform",
     "n_hidden": 3,
+    "width": 40, 
     "rank": 32, # for SPINN
-    "width": 40, # for PFNN
-    "depth": 5, # for PFNN
-    "num_domain": 64**2, # or 500 for PFNN
+    "num_domain": 64**2,
     "lr": 1e-3,
+    "lr_decay": None, # e.g. ["exponential", 1e-3, 2000, 0.9] or ["warmup cosine", 1e-5, 1e-3, 1000, 100000, 1e-5]
     "n_iter": 10000,
     "seed": 0,
     "lmbd": 1.0,
@@ -38,11 +41,21 @@ DEFAULT_CONFIG = {
     "mu_init": 0.3,
     "variables_training_factors": [1.0, 1.0], # Scale trainable variables to improve training
     "normalize_parameters": True, # Whether to normalize parameters during training
+    # Self-Attention (SA) for adaptive PDE loss weighting
+    "SA": False,  # Enable Self-Attention
+    "SA_init": "constant",  # "constant", "uniform", or "normal"
+    "SA_update_factor": -1.0,  # Update factor for SA weights (-1 for gradient descent)
+    "SA_share_weights": True,  # Share weights between PDE (momentum) and material (constitutive) losses
+    # Logging
     "available_time": None, # in minutes
     "log_every": 100,
     "results_dir": "results_analytical_plate",
-    "generate_video": True,
+    "generate_video": False,
     "log_fields": ["Ux", "Uy", "Sxx", "Syy", "Sxy"], # Fields to log during training
+    "save_on_disk": False,
+    # Model restoration
+    "restored_params": None,  # Network parameters to restore (from saved model)
+    "restored_external_vars": None,  # External trainable variables to restore (SA weights, material params)
 }
 
 class Config:
@@ -50,7 +63,7 @@ class Config:
         self.__dict__.update(entries)
 
 def exact_solution(x, lmbd, mu, Q, net_type="SPINN"):
-    if net_type == "SPINN" and isinstance(x, list):
+    if net_type == "SPINN" and isinstance(x, (list,tuple)):
         x_mesh = [x_.ravel() for x_ in jnp.meshgrid(x[0].squeeze(), x[1].squeeze(), indexing="ij")]
         x = dde.backend.stack(x_mesh, axis=-1)
 
@@ -71,7 +84,7 @@ def exact_solution(x, lmbd, mu, Q, net_type="SPINN"):
     return np.hstack((ux, uy, Sxx, Syy, Sxy))
 
 def body_forces(x, lmbd, mu, Q):
-    if isinstance(x, list):
+    if isinstance(x, (list,tuple)):
         x = transform_coords(x)
         
     sin = dde.backend.sin
@@ -108,7 +121,7 @@ def body_forces(x, lmbd, mu, Q):
     return fx, fy
 
 def HardBC(x, f, lmbd, mu, Q, net_type="SPINN"):
-    if net_type == "SPINN" and isinstance(x, list):
+    if net_type == "SPINN" and isinstance(x, (list,tuple)):
         x = transform_coords(x)
 
     sin = dde.backend.sin
@@ -122,9 +135,84 @@ def HardBC(x, f, lmbd, mu, Q, net_type="SPINN"):
     Sxy = f[:, 4]
     return dde.backend.stack((Ux, Uy, Sxx, Syy, Sxy), axis=1)
 
-def load_run(run_dir):
+def eval(config, model, ngrid=100):
+    """
+    Evaluate trained model on test data.
+    
+    Args:
+        config: Configuration dict or Config object
+        model: Trained DeepXDE model
+        ngrid: Grid resolution for evaluation
+    
+    Returns:
+        dict with prediction fields, errors, and metrics
+    """
+    if not isinstance(config, dict):
+        config = config.__dict__ if hasattr(config, '__dict__') else dict(config)
+    
+    lmbd = config.get("lmbd", 1.0)
+    mu = config.get("mu", 0.5)
+    Q = config.get("Q", 4.0)
+    net_type = config.get("net_type", "SPINN")
+    
+    # Create evaluation grid
+    x_lin = np.linspace(0, 1, ngrid)
+    if net_type == "SPINN":
+        X_input = [x_lin.reshape(-1, 1), x_lin.reshape(-1, 1)]
+    else:
+        Xmesh, Ymesh = np.meshgrid(x_lin, x_lin, indexing="ij")
+        X_input = np.stack((Xmesh.ravel(), Ymesh.ravel()), axis=1)
+    
+    # Get exact solution
+    y_exact = exact_solution(X_input, lmbd, mu, Q, net_type=net_type)
+    
+    # Get model predictions
+    y_pred = model.predict(X_input)
+    
+    # Reshape to 2D fields
+    field_names = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
+    fields_pred = {}
+    fields_exact = {}
+    fields_error = {}
+    
+    for i, name in enumerate(field_names):
+        exact_field = y_exact[:, i].reshape(ngrid, ngrid)
+        pred_field = y_pred[:, i].reshape(ngrid, ngrid)
+        fields_exact[name] = exact_field
+        fields_pred[name] = pred_field
+        fields_error[name] = pred_field - exact_field
+    
+    # Calculate metrics
+    l2_error = float(dde.metrics.l2_relative_error(y_exact, y_pred))
+    
+    # Per-field L2 errors
+    field_l2_errors = {}
+    for i, name in enumerate(field_names):
+        field_l2_errors[name] = float(dde.metrics.l2_relative_error(
+            y_exact[:, i:i+1], y_pred[:, i:i+1]
+        ))
+    
+    return {
+        "fields_pred": fields_pred,
+        "fields_exact": fields_exact,
+        "fields_error": fields_error,
+        "l2_error": l2_error,
+        "field_l2_errors": field_l2_errors,
+        "ngrid": ngrid,
+    }
+
+
+def load_run(run_dir, restore_model=False):
     """
     Load a saved run from disk and return a dictionary compatible with train() output.
+    
+    Args:
+        run_dir: Path to the run directory
+        restore_model: If True, reconstruct the model using saved parameters
+    
+    Returns:
+        dict with config, losshistory, field_saver, variable_value_callback,
+        and optionally model and evaluation results
     """
     from phd.utils import ResultsManager
     run_dir = Path(run_dir)
@@ -139,14 +227,16 @@ def load_run(run_dir):
 
     # Load Loss History
     try:
-        steps, loss_test = rm.load_loss_history()
+        steps, loss_train = rm.load_loss_history()
+        metrics_test = np.array(loss_train)[:, -1:] if len(loss_train) > 0 else []
         # Create a mock LossHistory object
         class MockLossHistory:
-            def __init__(self, steps, loss_test):
+            def __init__(self, steps, loss_train, metrics_test):
                 self.steps = steps
-                self.loss_test = loss_test
-                self.loss_train = loss_test # Assuming same for now
-        losshistory = MockLossHistory(steps, loss_test)
+                self.loss_train = loss_train
+                self.loss_test = loss_train
+                self.metrics_test = metrics_test
+        losshistory = MockLossHistory(steps, loss_train, metrics_test)
     except Exception as e:
         print(f"Warning: Could not load loss history: {e}")
         losshistory = None
@@ -164,10 +254,21 @@ def load_run(run_dir):
         except Exception as e:
             print(f"Warning: Could not load variables: {e}")
 
+    # Load model parameters
+    model_params = None
+    external_vars = None
+    params_file = run_dir / "model_params.npz"
+    if params_file.exists():
+        try:
+            with np.load(params_file, allow_pickle=True) as f:
+                model_params = f["params"].item()  # Restore pytree
+                if "external_vars" in f:
+                    external_vars = f["external_vars"].item()
+        except Exception as e:
+            print(f"Warning: Could not load model params: {e}")
+
     # Load Fields (Mock FieldSaver)
     from phd.models.cm.utils import FieldSaver
-    # We can't easily reconstruct the full FieldSaver without the model/data, 
-    # but we can reconstruct the history part which is what's used for plotting.
     field_saver = FieldSaver(period=1, x_eval=None, results_manager=rm, field_names={}, save_to_disk=False)
     field_saver.history = []
     
@@ -185,15 +286,33 @@ def load_run(run_dir):
                         fields = {k: f[k] for k in f.keys()}
                         field_saver.history.append((step, fields))
 
-    return {
+    result = {
         "config": config,
         "losshistory": losshistory,
         "run_dir": str(run_dir),
         "field_saver": field_saver,
-        "variable_value_callback": variable_value_callback
+        "variable_value_callback": variable_value_callback,
+        "model_params": model_params,
+        "external_vars": external_vars,
     }
+    
+    # Optionally restore the model
+    if restore_model and model_params is not None and config:
+        print("Restoring model from saved parameters...")
+        restore_config = {
+            **config,
+            "n_iter": 0,
+            "restored_params": model_params,
+            "restored_external_vars": external_vars,
+            "save_on_disk": False,
+        }
+        restored = train(restore_config)
+        result["model"] = restored["model"]
+        result["evaluation"] = eval(config, restored["model"])
+    
+    return result
 
-def train(config=None, save_on_disk=True):
+def train(config=None):
     cfg = DEFAULT_CONFIG.copy()
     if config is not None:
         cfg.update(config)
@@ -206,31 +325,102 @@ def train(config=None, save_on_disk=True):
     # Geometry
     geom = dde.geometry.Rectangle([0, 0], [1, 1])
     
-    # Parameters
+    # Parameters (true values, used for body forces and reference)
     lmbd = cfg.lmbd
     mu = cfg.mu
     Q = cfg.Q
     
-    # Trainable variables for inverse problem
+    # =========================================================================
+    # Build external_trainable_variables list
+    # Order: [SA_pde_weights, SA_mat_weights (if not shared), lmbd, mu (if inverse)]
+    # The pde_fn uses `unknowns` which contains the CURRENT values during training.
+    # =========================================================================
     external_trainable_variables = []
+    sa_pde_weight = None
+    sa_mat_weight = None
+    variables_training_factor = None
+    
+    # --- Self-Attention weights ---
+    # SA weights come FIRST in external_trainable_variables
+    n_sa_vars = 0  # Track how many SA variables we add
+    if cfg.SA:
+        key = jax.random.PRNGKey(cfg.seed)
+        if cfg.SA_init == "constant":
+            pde_weight_init = jnp.ones((cfg.num_domain, 1))
+            mat_weight_init = jnp.ones((cfg.num_domain, 1))
+        elif cfg.SA_init == "uniform":
+            pde_weight_init = jax.random.uniform(key, (cfg.num_domain, 1)) * 10
+            mat_weight_init = jax.random.uniform(jax.random.split(key)[0], (cfg.num_domain, 1)) * 10
+        elif cfg.SA_init == "normal":
+            pde_weight_init = jax.random.normal(key, (cfg.num_domain, 1)) * 10 + 10
+            mat_weight_init = jax.random.normal(jax.random.split(key)[0], (cfg.num_domain, 1)) * 10 + 10
+        else:
+            raise ValueError(f"Invalid SA_init: {cfg.SA_init}. Use 'constant', 'uniform', or 'normal'.")
+        
+        sa_pde_weight = dde.Variable(pde_weight_init, update_factor=cfg.SA_update_factor)
+        external_trainable_variables.append(sa_pde_weight)
+        n_sa_vars = 1
+        
+        if not cfg.SA_share_weights:
+            sa_mat_weight = dde.Variable(mat_weight_init, update_factor=cfg.SA_update_factor)
+            external_trainable_variables.append(sa_mat_weight)
+            n_sa_vars = 2
+    
+    # --- Trainable material parameters (inverse problem) ---
+    # Material variables come AFTER SA weights in external_trainable_variables
+    lmbd_trainable = None
+    mu_trainable = None
     if cfg.task == "inverse":
-        variables_training_factor = cfg.variables_training_factors
-        if cfg.normalize_parameters :
+        variables_training_factor = list(cfg.variables_training_factors)  # Make a copy
+        if cfg.normalize_parameters:
             variables_training_factor[0] *= cfg.lmbd_init
             variables_training_factor[1] *= cfg.mu_init
 
         lmbd_trainable = dde.Variable(cfg.lmbd_init / variables_training_factor[0])
         mu_trainable = dde.Variable(cfg.mu_init / variables_training_factor[1])
-        external_trainable_variables = [lmbd_trainable, mu_trainable]
-        
-        # Note: For JAX backend, we must use the `unknowns` argument, not var.value directly.
-        # DeepXDE passes the current trained values through `unknowns` during training.
+        external_trainable_variables.append(lmbd_trainable)
+        external_trainable_variables.append(mu_trainable)
+    
+    # =========================================================================
+    # Define PDE function
+    # CRITICAL: unknowns order is [SA_pde, SA_mat?, lmbd, mu] based on how we built the list
+    # If no external_trainable_variables, use a simple 2-arg function.
+    # =========================================================================
+    if external_trainable_variables:
+        # PDE function WITH unknowns argument (for SA and/or inverse problem)
         def pde_fn(x, f, unknowns=external_trainable_variables):
-            l_val = unknowns[0] * variables_training_factor[0]
-            m_val = unknowns[1] * variables_training_factor[1]
-            fx, fy = body_forces(x, l_val, m_val, Q)
-            return linear_elasticity_pde(x, f, l_val, m_val, lambda _: fx, lambda _: fy, net_type=cfg.net_type)
+            # Determine material parameter values for constitutive equations
+            if cfg.task == "inverse":
+                # Material params are at indices [n_sa_vars] and [n_sa_vars + 1]
+                l_val = unknowns[n_sa_vars] * variables_training_factor[0]
+                m_val = unknowns[n_sa_vars + 1] * variables_training_factor[1]
+            else:
+                l_val = lmbd
+                m_val = mu
+            
+            # IMPORTANT: Body forces use TRUE material parameters (lmbd, mu)
+            # because they represent the actual applied loads to the system.
+            # The trainable l_val, m_val are only used in the constitutive equations.
+            fx, fy = body_forces(x, lmbd, mu, Q)
+            residuals = linear_elasticity_pde(x, f, l_val, m_val, lambda _: fx, lambda _: fy, net_type=cfg.net_type)
+            # residuals = [momentum_x, momentum_y, stress_x, stress_y, stress_xy]
+            
+            # Apply Self-Attention weights if enabled
+            if cfg.SA:
+                pde_w = unknowns[0].flatten()  # SA_pde_weight is always first
+                mat_w = pde_w if cfg.SA_share_weights else unknowns[1].flatten()
+                
+                # Weight PDE losses (momentum equations)
+                residuals[0] = pde_w * residuals[0]
+                residuals[1] = pde_w * residuals[1]
+                # Weight material losses (constitutive equations)
+                residuals[2] = mat_w * residuals[2]
+                residuals[3] = mat_w * residuals[3]
+                residuals[4] = mat_w * residuals[4]
+            
+            return residuals
     else:
+        # Simple PDE function WITHOUT unknowns (forward problem, no SA)
         def pde_fn(x, f):
             fx, fy = body_forces(x, lmbd, mu, Q)
             return linear_elasticity_pde(x, f, lmbd, mu, lambda _: fx, lambda _: fy, net_type=cfg.net_type)
@@ -270,11 +460,15 @@ def train(config=None, save_on_disk=True):
 
     # Network
     if cfg.net_type == "SPINN":
-        layers = [2] + [cfg.rank] * cfg.n_hidden + [5]
-        net = dde.nn.SPINN(layers, cfg.activations, cfg.initialization, cfg.mlp_type)
+        layers = [2] + [cfg.width] * cfg.n_hidden + [cfg.rank*5] + [5]
+        net = dde.nn.SPINN(layers, cfg.activations, cfg.initialization, cfg.mlp_type, 
+                           params=cfg.restored_params)
     else:
-        layers = [2] + [cfg.width] * cfg.depth + [5]
+        layers = [2] + [[cfg.width] * 5] * cfg.n_hidden + [5]
         net = dde.nn.PFNN(layers, cfg.activations, cfg.initialization)
+        # Restore params if provided (for PFNN, need to set after creation)
+        if cfg.restored_params is not None:
+            net.params = cfg.restored_params
 
     # Hard BC transform
     if cfg.bc_type == "hard":
@@ -293,16 +487,32 @@ def train(config=None, save_on_disk=True):
     run_name = f"{cfg.task}_{cfg.net_type}_{int(time.time())}"
     results_manager = ResultsManager(run_name=run_name, base_dir=cfg.results_dir)
 
+    # Variable logging callbacks
     variable_value_callback = None
+    variable_array_callback = None
+    
     if cfg.task == "inverse":
         variable_value_callback = VariableValue(
-            external_trainable_variables, 
+            [lmbd_trainable, mu_trainable], 
             period=cfg.log_every, 
             filename=None,  # Never save during training, use save_run_data instead
             precision=4,
-            scale_factors=cfg.variables_training_factors
+            scale_factors=variables_training_factor  # This scaling takes normalization into account
         )
         callbacks.append(variable_value_callback)
+    
+    if cfg.SA:
+        # Set up SA weight logging
+        sa_var_dict = {"pde_weights": sa_pde_weight}
+        if not cfg.SA_share_weights:
+            sa_var_dict["mat_weights"] = sa_mat_weight
+        variable_array_callback = VariableArray(
+            sa_var_dict,
+            period=cfg.log_every,
+            results_manager=results_manager,
+            save_to_disk=False  # Never save during training, use save_run_data instead
+        )
+        callbacks.append(variable_array_callback)
 
     # Field Logging
     all_fields = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
@@ -329,24 +539,42 @@ def train(config=None, save_on_disk=True):
     callbacks.append(field_saver)
 
     # Compile and Train
-    model.compile("adam", lr=cfg.lr, metrics=["l2 relative error"], external_trainable_variables=external_trainable_variables)
+    model.compile(
+        "adam", 
+        lr=cfg.lr, 
+        decay=cfg.lr_decay,  # Support for lr_decay
+        metrics=["l2 relative error"], 
+        external_trainable_variables=external_trainable_variables if external_trainable_variables else None
+    )
     
     start_time = time.time()
     losshistory, train_state = model.train(iterations=cfg.n_iter, callbacks=callbacks, display_every=cfg.log_every)
     elapsed = time.time() - start_time
+    its_per_sec = cfg.n_iter / elapsed if elapsed > 0 and cfg.n_iter > 0 else 0
+
+    # Evaluation
+    eval_results = eval(cfg, model)
+    
+    # Print summary
+    if cfg.n_iter > 0:
+        print(f"L2 relative error: {eval_results['l2_error']:.3e}")
+        print(f"Elapsed training time: {elapsed:.2f} s, {its_per_sec:.2f} it/s")
 
     results = {
         "model": model,
         "losshistory": losshistory,
         "config": cfg.__dict__,
         "run_dir": str(results_manager.run_dir),
-        "elapsed": elapsed,
+        "elapsed_time": elapsed,
+        "iterations_per_sec": its_per_sec,
+        "evaluation": eval_results,
         "field_saver": field_saver,
-        "variable_value_callback": variable_value_callback
+        "variable_value_callback": variable_value_callback,
+        "variable_array_callback": variable_array_callback,
     }
 
     # Save all data to disk if requested
-    if save_on_disk:
+    if cfg.save_on_disk:
         save_run_data(results, results_manager)
         
         if cfg.generate_video:
@@ -385,6 +613,18 @@ def save_run_data(results, results_manager=None):
     if "losshistory" in results:
         results_manager.save_loss_history(results["losshistory"])
 
+    # Save model parameters
+    if "model" in results and results["model"] is not None:
+        model = results["model"]
+        params_file = results_manager.get_path("model_params.npz")
+        save_dict = {"params": model.net.params}
+        # Also save external trainable variables if they exist
+        if hasattr(model, 'external_trainable_variables') and model.external_trainable_variables:
+            external_vars = {f"var_{i}": v.value for i, v in enumerate(model.external_trainable_variables)}
+            save_dict["external_vars"] = external_vars
+        np.savez(params_file, **{k: np.array(v, dtype=object) for k, v in save_dict.items()})
+        print(f"Saved model parameters to {params_file}")
+
     # Save variables
     if "variable_value_callback" in results and results["variable_value_callback"]:
         cb = results["variable_value_callback"]
@@ -403,65 +643,61 @@ def save_run_data(results, results_manager=None):
                     line = " ".join(map(str, flat_row))
                     f.write(line + "\n")
 
+    # Save variable arrays (SA weights) if they exist
+    if "variable_array_callback" in results and results["variable_array_callback"]:
+        cb = results["variable_array_callback"]
+        if cb.history:
+            print(f"Saving {len(cb.history)} SA weight snapshots...")
+            cb.save_all(results_manager.get_path("variable_arrays.npz"))
+
     # Save fields if they exist in memory
-    if "field_saver" in results:
+    if "field_saver" in results and results["field_saver"]:
         saver = results["field_saver"]
-        # Force save all history to disk
-        print(f"Saving {len(saver.history)} field snapshots to {results_manager.run_dir}/fields/...")
-        
-        # Ensure directory exists
-        fields_dir = results_manager.get_path("fields")
-        fields_dir.mkdir(exist_ok=True)
-        
-        # Save steps
-        steps = [h[0] for h in saver.history]
-        np.savetxt(fields_dir / "steps.txt", np.array(steps, dtype=int), fmt="%d")
-        
-        # Save each snapshot
-        for snapshot in saver.history:
-            step = snapshot[0]
-            fields = snapshot[1]
-            # Convert list of arrays to dict for np.savez
-            # fields is already a dict {name: array}
-            np.savez_compressed(fields_dir / f"fields_{step}.npz", **fields)
+        if saver.history:
+            # Force save all history to disk
+            print(f"Saving {len(saver.history)} field snapshots to {results_manager.run_dir}/fields/...")
+            
+            # Ensure directory exists
+            fields_dir = results_manager.get_path("fields")
+            fields_dir.mkdir(exist_ok=True)
+            
+            # Save steps
+            steps = [h[0] for h in saver.history]
+            np.savetxt(fields_dir / "steps.txt", np.array(steps, dtype=int), fmt="%d")
+            
+            # Save each snapshot
+            for snapshot in saver.history:
+                step = snapshot[0]
+                fields = snapshot[1]
+                np.savez_compressed(fields_dir / f"fields_{step}.npz", **fields)
+    
     print("Data saved successfully.")
 
 
-def _compute_metrics_from_history(loss_history_full):
-    """Derive named metrics from the raw loss history matrix.
+def _compute_metrics_from_history(losshistory):
+    """Derive named metrics from LossHistory object.
     
-    The loss_test array structure depends on the problem:
-    - Forward: [pde_losses..., l2_relative_error]
-    - Inverse: [pde_losses..., mat_losses..., dic_losses..., l2_relative_error]
+    loss_train structure:
+    - Forward: [pde_x, pde_y, mat_x, mat_y, mat_xy]
+    - Inverse: [pde_x, pde_y, mat_x, mat_y, mat_xy, DIC_x, DIC_y]
     
-    The last column is always the L2 relative error metric.
+    metrics_test contains the L2 relative error separately.
     """
-    arr = np.array(loss_history_full)
-    if arr.ndim == 1:
-        arr = arr.reshape(-1, 1)
+    steps = np.array(losshistory.steps)
+    loss_train = np.array([np.array(l) for l in losshistory.loss_train])
+    metrics_test = np.array(losshistory.metrics_test).squeeze()
+    n_cols = loss_train.shape[1]
     
-    metrics = {}
-    n_cols = arr.shape[1]
+    metrics = {
+        "steps": steps,
+        "Residual": metrics_test,
+        "PDE Loss": np.mean(loss_train[:, 0:2], axis=1),
+        "Material Loss": np.mean(loss_train[:, 2:5], axis=1),
+        "Total Loss": np.mean(loss_train, axis=1),
+    }
     
-    # Last column is always the L2 relative error (the metric we specified)
-    metrics["Residual"] = arr[:, -1]
-    
-    if n_cols >= 7:
-        # Inverse problem: [pde_x, pde_y, mat_x, mat_y, dic_x, dic_y, l2_error]
-        pde_loss = np.mean(arr[:, 0:2], axis=1)
-        mat_loss = np.mean(arr[:, 2:4], axis=1)
-        dic_loss = np.mean(arr[:, 4:6], axis=1)
-        total_loss = np.mean(arr[:, 0:6], axis=1)
-        metrics.update({
-            "PDE Loss": pde_loss,
-            "Material Loss": mat_loss,
-            "DIC Loss": dic_loss,
-            "Total Loss": total_loss,
-        })
-    elif n_cols >= 2:
-        # Forward problem: [pde_losses..., l2_error]
-        # Sum all except last column for total loss
-        metrics["Total Loss"] = np.mean(arr[:, :-1], axis=1)
+    if n_cols == 7:  # Inverse problem with DIC
+        metrics["DIC Loss"] = np.mean(loss_train[:, 5:7], axis=1)
     
     return metrics
 
@@ -470,8 +706,8 @@ def process_results(results, plot_fields=None):
     Process results dictionary and return data needed for plotting.
     
     Returns:
-        steps: array of step indices
-        metrics: dict of metric arrays
+        steps: array of step indices (from field_saver if available)
+        metrics: dict of metric arrays (includes its own 'steps' key)
         vars_history: dict of variable histories
         fields_init: dict of field initialization data (reference values, titles)
         get_snapshot: function that returns snapshot at given index
@@ -480,103 +716,66 @@ def process_results(results, plot_fields=None):
         fields_dict: dict of field arrays (for animation frame access)
     """
     config = results["config"]
-    # Ensure steps are numpy array
-    steps = np.array(results["losshistory"].steps)
-    loss_history_full = np.array(results["losshistory"].loss_test)
-    if loss_history_full.ndim == 1:
-        loss_history_full = loss_history_full.reshape(-1, 1)
-        loss_history = loss_history_full.squeeze()
-    else:
-        loss_history = np.sum(loss_history_full, axis=1)
+    metrics = _compute_metrics_from_history(results["losshistory"])
     
+    # Get field data and steps from field_saver
     fields_dict = {}
-    field_steps = steps
-    
-    if "field_saver" in results and results["field_saver"]:
-        saver = results["field_saver"]
-        history = saver.history
-        if history:
-            field_steps = np.array([h[0] for h in history])
-            # Align loss_history with field_steps
-            loss_indices = np.searchsorted(steps, field_steps)
-            loss_indices = np.clip(loss_indices, 0, len(loss_history) - 1)
-            loss_history = loss_history[loss_indices]
-            loss_history_full = loss_history_full[loss_indices]
-            steps = field_steps
-            
-            first_snapshot = history[0][1]
-            for name in first_snapshot.keys():
-                fields_dict[name] = np.array([h[1][name] for h in history])
-    
-    vars_history = {}
-    if "variable_value_callback" in results and results["variable_value_callback"]:
-        var_hist = np.array(results["variable_value_callback"].history)
-        if var_hist.size > 0:
-             if var_hist.ndim == 1: var_hist = var_hist.reshape(1, -1)
-             vars_history["lambda"] = {"steps": var_hist[:, 0], "values": var_hist[:, 1]}
-             vars_history["mu"] = {"steps": var_hist[:, 0], "values": var_hist[:, 2]}
-
-    # 2. Prepare Plot Data
-    if fields_dict:
-        first_field = next(iter(fields_dict.values()))
-        n_points = first_field.shape[1]
+    field_saver = results.get("field_saver")
+    if field_saver and field_saver.history:
+        steps = np.array([h[0] for h in field_saver.history])
+        first_snapshot = field_saver.history[0][1]
+        for name in first_snapshot.keys():
+            fields_dict[name] = np.array([h[1][name] for h in field_saver.history])
     else:
-        n_points = 100*100 
-        
-    ngrid = int(np.sqrt(n_points))
+        steps = metrics["steps"]
+    
+    # Get variable history
+    vars_history = {}
+    var_cb = results.get("variable_value_callback")
+    if var_cb and var_cb.history:
+        var_hist = np.array(var_cb.history)
+        if var_hist.ndim == 1: 
+            var_hist = var_hist.reshape(1, -1)
+        vars_history["lambda"] = {"steps": var_hist[:, 0], "values": var_hist[:, 1]}
+        vars_history["mu"] = {"steps": var_hist[:, 0], "values": var_hist[:, 2]}
+
+    # Prepare mesh grid
+    ngrid = int(np.sqrt(fields_dict[next(iter(fields_dict))].shape[1])) if fields_dict else 100
     x_lin = np.linspace(0, 1, ngrid)
     Xmesh, Ymesh = np.meshgrid(x_lin, x_lin, indexing="ij")
-    
-    if len(loss_history) != len(steps):
-        loss_history = loss_history[:len(steps)]
-        loss_history_full = loss_history_full[:len(steps)]
-    metrics = _compute_metrics_from_history(loss_history_full)
 
+    # Field names and exact solution
     all_field_names = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
-    if plot_fields is None:
-        field_names = [f for f in all_field_names if f in fields_dict]
-    else:
-        field_names = [f for f in plot_fields if f in all_field_names and f in fields_dict]
+    field_names = [f for f in (plot_fields or all_field_names) if f in fields_dict]
     
     LATEX_FIELD_NAMES = {
         "Ux": r"$\mathbf{u}_x$", "Uy": r"$\mathbf{u}_y$",
-        "Exx": r"$\varepsilon_{xx}$", "Eyy": r"$\varepsilon_{yy}$", "Exy": r"$\varepsilon_{xy}$",
         "Sxx": r"$\sigma_{xx}$", "Syy": r"$\sigma_{yy}$", "Sxy": r"$\sigma_{xy}$"
     }
     
-    fields_init = {}
-    
-    lmbd = config.get("lmbd", 1.0)
-    mu = config.get("mu", 0.5)
-    Q = config.get("Q", 4.0)
+    # Compute exact solution for reference
+    lmbd, mu, Q = config.get("lmbd", 1.0), config.get("mu", 0.5), config.get("Q", 4.0)
     net_type = config.get("net_type", "SPINN")
+    X_input = [x_lin.reshape(-1, 1)] * 2 if net_type == "SPINN" else np.stack((Xmesh.ravel(), Ymesh.ravel()), axis=1)
+    exact_vals = exact_solution(X_input, lmbd, mu, Q, net_type)
     
-    def exact_fn(x):
-        return exact_solution(x, lmbd, mu, Q, net_type)
-        
-    if net_type == "SPINN":
-        X_input = [x_lin.reshape(-1, 1), x_lin.reshape(-1, 1)]
-    else:
-        X_input = np.stack((Xmesh.ravel(), Ymesh.ravel()), axis=1)
-        
-    exact_vals = exact_fn(X_input)
-    
-    for name in field_names:
-        name_idx = all_field_names.index(name)
-        fields_init[name] = {
-            "data": [exact_vals[:, name_idx].reshape(ngrid, ngrid)], # Reference
+    fields_init = {
+        name: {
+            "data": [exact_vals[:, all_field_names.index(name)].reshape(ngrid, ngrid)],
             "title": LATEX_FIELD_NAMES.get(name, name),
         }
+        for name in field_names
+    }
         
     def get_snapshot(idx):
-        snapshot = {}
-        for name in field_names:
-            if name in fields_dict:
-                pred = fields_dict[name][idx].reshape(ngrid, ngrid)
-                ref = fields_init[name]["data"][0]
-                err = pred - ref
-                snapshot[name] = [ref, pred, err]
-        return snapshot
+        return {
+            name: [
+                fields_init[name]["data"][0],
+                fields_dict[name][idx].reshape(ngrid, ngrid),
+                fields_dict[name][idx].reshape(ngrid, ngrid) - fields_init[name]["data"][0]
+            ]
+            for name in field_names if name in fields_dict
+        }
         
     return steps, metrics, vars_history, fields_init, get_snapshot, (Xmesh, Ymesh), config, fields_dict
 
@@ -670,21 +869,25 @@ def init_plot(results, iteration=-1, **opts):
         lmbd_true, mu_true = config.get("lmbd", 1.0), config.get("mu", 0.5)
         get_hist = lambda name: (vars_history[name]["steps"], vars_history[name]["values"]) if name in vars_history else (steps, np.zeros_like(steps))
         
+        has_variables = False
         for row, (var, true_val, lbl, clr) in enumerate([("lambda", lmbd_true, r"$\lambda$", 'b'), ("mu", mu_true, r"$\mu$", 'r')]):
             ax_var = ax[row, 0]
             ax_var.set_box_aspect(1)  # Square aspect ratio
             if var not in vars_history:
                 ax_var.set_visible(False)
             else:
+                has_variables = True
                 s, v = get_hist(var)
-                art = init_parameter_evolution(ax_var, s, v, true_val=true_val, label=lbl, color=clr)
+                art = init_parameter_evolution(ax_var, s, v, true_val=true_val, label=lbl, color=clr, show_xlabel=False)
                 artists["var_artists"][var] = art
                 update_parameter_evolution(current_step, art)
 
         # Metrics in last row of column 0
         ax_loss = ax[n_rows - 1, 0]
         ax_loss.set_box_aspect(1)  # Square aspect ratio
-        artists["metrics_artists"] = init_metrics(ax_loss, steps, metrics, selected_metrics=o["metrics"])
+        # Use label instead of title if there are variables being plotted
+        # Use metrics["steps"] which matches the metrics arrays length
+        artists["metrics_artists"] = init_metrics(ax_loss, metrics["steps"], metrics, selected_metrics=o["metrics"], use_title=not has_variables)
         update_metrics(current_step, artists["metrics_artists"])
     
     # --- Field columns ---
@@ -733,7 +936,7 @@ def update_frame(frame_idx, fig, artists):
     steps = artists["steps"]
     current_step = steps[frame_idx]
     
-    fig.suptitle(f"Step: {int(current_step)}")
+    fig.suptitle(f"Iteration: {int(current_step)}", y=1.015)
     
     # Update variable evolution plots
     for var_name, art in artists["var_artists"].items():
