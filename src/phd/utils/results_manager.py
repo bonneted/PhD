@@ -33,7 +33,7 @@ class ResultsManager:
             run_name = f"run_{int(time.time())}"
             
         self.run_dir = self.base_dir / run_name
-        self.ensure_dir()
+        # Note: Don't create directory here - only create when actually saving
         
     def ensure_dir(self):
         self.run_dir.mkdir(parents=True, exist_ok=True)
