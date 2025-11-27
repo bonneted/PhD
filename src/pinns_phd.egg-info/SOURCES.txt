@@ -10,6 +10,8 @@ src/phd/models/__init__.py
 src/phd/models/allen_cahn.py
 src/phd/models/cm/__init__.py
 src/phd/models/cm/analytical_plate.py
+src/phd/models/cm/pinn_forward_sa.py
+src/phd/models/cm/pinn_inverse.py
 src/phd/models/cm/plot_util.py
 src/phd/models/cm/plot_util_old.py
 src/phd/models/cm/utils.py

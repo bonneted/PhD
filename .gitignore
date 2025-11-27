@@ -1,5 +1,7 @@
 notebooks/results_notebook/*
 notebooks/analytical_plate_results/
 *.pyc
+*.npz
 wandb/
 src/pinns_phd.egg-info/
+results/IV_ImprovingPINNs/IV_5_CM_Plate/
