@@ -59,7 +59,7 @@ DEFAULT_CONFIG = {
 }
 
 LATEX_FIELD_NAMES = {
-    "Ux": r"$\mathbf{u}_x$", "Uy": r"$\mathbf{u}_y$",
+    "Ux": r"$u_x$", "Uy": r"$u_y$",
     "Sxx": r"$\sigma_{xx}$", "Syy": r"$\sigma_{yy}$", "Sxy": r"$\sigma_{xy}$"
 }
 
