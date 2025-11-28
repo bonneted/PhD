@@ -58,6 +58,11 @@ DEFAULT_CONFIG = {
     "restored_external_vars": None,  # External trainable variables to restore (SA weights, material params)
 }
 
+LATEX_FIELD_NAMES = {
+    "Ux": r"$\mathbf{u}_x$", "Uy": r"$\mathbf{u}_y$",
+    "Sxx": r"$\sigma_{xx}$", "Syy": r"$\sigma_{yy}$", "Sxy": r"$\sigma_{xy}$"
+}
+
 class Config:
     def __init__(self, **entries):
         self.__dict__.update(entries)
@@ -747,11 +752,6 @@ def process_results(results, plot_fields=None):
     # Field names and exact solution
     all_field_names = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
     field_names = [f for f in (plot_fields or all_field_names) if f in fields_dict]
-    
-    LATEX_FIELD_NAMES = {
-        "Ux": r"$\mathbf{u}_x$", "Uy": r"$\mathbf{u}_y$",
-        "Sxx": r"$\sigma_{xx}$", "Syy": r"$\sigma_{yy}$", "Sxy": r"$\sigma_{xy}$"
-    }
     
     # Compute exact solution for reference
     lmbd, mu, Q = config.get("lmbd", 1.0), config.get("mu", 0.5), config.get("Q", 4.0)

@@ -137,7 +137,7 @@ def update_parameter_evolution(current_step, artist):
     ax = artist["scatter"].axes
     ax.legend(handlelength=1).get_frame().set_linewidth(0.5)
 
-def plot_field(ax, X, Y, data, title=None, cmap='viridis', vmin=None, vmax=None):
+def plot_field(ax, X, Y, data, title=None, cmap='viridis', plot_contours=False, vmin=None, vmax=None):
     """
     Generic pcolor plot for a field.
     """
@@ -145,6 +145,9 @@ def plot_field(ax, X, Y, data, title=None, cmap='viridis', vmin=None, vmax=None)
     if vmax is None: vmax = np.nanmax(data)
     
     im = ax.pcolor(X, Y, data, cmap=cmap, shading='auto', vmin=vmin, vmax=vmax)
+    if plot_contours:
+        cs = ax.contour(X, Y, data, colors='k', alpha=0.15, levels=10)
+        # ax.clabel(cs, inline=True, fmt="%.2f")
     ax.set_aspect('equal')
     ax.set_xticks([])
     ax.set_yticks([])
