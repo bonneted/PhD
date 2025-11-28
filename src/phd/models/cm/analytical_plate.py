@@ -465,7 +465,7 @@ def train(config=None):
 
     # Network
     if cfg.net_type == "SPINN":
-        layers = [2] + [cfg.width] * cfg.n_hidden + [cfg.rank*5] + [5]
+        layers = [2] + [cfg.width] * (cfg.n_hidden-1) + [cfg.rank] + [5]
         net = dde.nn.SPINN(layers, cfg.activations, cfg.initialization, cfg.mlp_type, 
                            params=cfg.restored_params)
     else:
