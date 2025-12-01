@@ -1,0 +1,121 @@
+% Section III.1: Separable PINNs
+\section{Separable Physics-Informed Neural Networks}
+\label{sec:III1_SeparablePINNs}
+
+Separable Physics-Informed Neural Networks (SPINNs) were introduced by Cho et al.~\cite{choSeparablePhysicsInformedNeural2023} as an alternative architecture to traditional PINNs. The key insight is to decompose the solution approximation into a sum of separable rank-1 tensors, exploiting the structure of PDE problems defined on tensor-product domains. This approach dramatically reduces the computational cost of both forward evaluation and gradient computation, enabling the use of significantly larger batch sizes during training.
+
+%------------------------------------------------------------------------------
+\subsection{Architecture}
+\label{sec:spinn_architecture}
+
+The SPINN architecture, illustrated in Figure~\ref{fig:III1_SPINN_architecture}, consists of $d$ separate \emph{body-networks}, where $d$ is the spatial dimension. Each body-network $f^{(\theta_i)}: \mathbb{R} \to \mathbb{R}^r$ is an MLP that takes a single coordinate component $x_i$ as input and outputs an $r$-dimensional feature vector, where $r$ is the \emph{rank} of the decomposition.
+
+\begin{figure}[ht]
+    \centering
+    \includesvg[width=\linewidth, inkscapelatex=false]{chapters/03__ImprovingPINNs/images/SPINN_architecture.svg}
+    \caption{SPINN architecture for a 3D problem. Each coordinate is processed by a separate body-network, and features are combined via outer product and summation.}
+    \label{fig:III1_SPINN_architecture}
+\end{figure}
+
+The final prediction is computed by combining features from all body-networks through a product-and-sum operation:
+\begin{equation}
+    \hat{u}(x_1, \ldots, x_d) = \sum_{j=1}^{r} \prod_{i=1}^{d} f^{(\theta_i)}_j(x_i).
+    \label{eq:spinn_output}
+\end{equation}
+This formulation corresponds to a Canonical Polyadic (CP) tensor decomposition, where the solution is approximated as a sum of $r$ rank-1 tensors.
+
+For batched evaluation with $N$ samples per coordinate, let $\mathbf{F}_i = f^{(\theta_i)}(\mathbf{x}_i) \in \mathbb{R}^{N \times r}$ denote the features from the $i$-th body-network. The solution tensor $\hat{\mathbf{U}} \in \mathbb{R}^{N^d}$ is reconstructed via outer products:
+\begin{equation}
+    \hat{\mathbf{U}} = \sum_{j=1}^{r} \bigotimes_{i=1}^{d} \mathbf{F}_{:,j,i}.
+    \label{eq:spinn_batch}
+\end{equation}
+
+\paragraph{Vector-valued outputs.}
+For problems with $m$ output components (e.g., displacement fields), SPINN uses an expanded feature dimension $r \cdot m$. Each body-network outputs $\mathbf{F} \in \mathbb{R}^{N \times r \times m}$, and the $k$-th output component is computed as $\hat{u}_k(\mathbf{x}) = \sum_{j=1}^{r} \prod_{i=1}^{d} f^{(\theta_i)}_{j,k}(x_i)$.
+
+%------------------------------------------------------------------------------
+\subsection{Approximation Capabilities}
+\label{sec:spinn_approximation}
+
+Cho et al.~\cite{choSeparablePhysicsInformedNeural2023} provide theoretical justification for the universal approximation capability of SPINNs. Under mild conditions on the activation function and network architecture, SPINNs can approximate any continuous function on a compact domain to arbitrary accuracy. The rank $r$ controls the expressiveness: higher ranks allow approximating more complex solution structures at the cost of increased parameters.
+
+%------------------------------------------------------------------------------
+\subsection{Convergence and Training Behavior}
+\label{sec:spinn_convergence}
+
+It is important to note that SPINN does not inherently achieve better final accuracy than standard PINNs. As acknowledged by the original authors~\cite{choSeparablePhysicsInformedNeural2023} and later observed in Chapter~\ref{ch:improving_pinns}, both architectures suffer from similar training pathologies (spectral bias, loss imbalance, etc.). The key advantage of SPINN lies in its computational efficiency: by reducing the cost per training step, SPINN enables the use of substantially larger batch sizes within the same computational budget, which can ultimately lead to improved convergence.
+
+%------------------------------------------------------------------------------
+\subsection{Computational Efficiency}
+\label{sec:spinn_efficiency}
+
+\subsubsection{Theoretical Scaling}
+
+A standard PINN processes all $N^d$ grid points through the network, with cost $\mathcal{O}(N^d \cdot C_f)$ where $C_f$ is the forward pass cost. SPINN separates this into two phases:
+
+\paragraph{Body-network evaluation.} Each of the $d$ body-networks processes only $N$ points:
+\begin{equation}
+    C_{\text{body}} = N \cdot d \cdot C_f = \mathcal{O}(Nd).
+\end{equation}
+
+\paragraph{Feature merging.} The outer product in Eq.~\eqref{eq:spinn_batch} operates on $N^d$ points but involves only cheap element-wise operations:
+\begin{equation}
+    C_{\text{merge}} = N^d \cdot r \cdot d \cdot c_h,
+\end{equation}
+where $c_h \ll C_f$ since no nonlinear activations are involved.
+
+\subsubsection{Gradient Computation with Forward-Mode AD}
+
+The key advantage appears when computing spatial derivatives $\partial \hat{u}/\partial x_i$. From Eq.~\eqref{eq:spinn_output}:
+\begin{equation}
+    \frac{\partial \hat{u}}{\partial x_i} = \sum_{j=1}^{r} \left( \prod_{k \neq i} f^{(\theta_k)}_j(x_k) \right) \cdot \frac{\partial f^{(\theta_i)}_j}{\partial x_i}.
+    \label{eq:spinn_grad}
+\end{equation}
+The derivative $\partial f^{(\theta_i)}/\partial x_i$ only involves the $i$-th body-network, which processes $N$ points---not $N^d$. Using forward-mode automatic differentiation (JVP), the gradient cost for all $d$ dimensions scales as $\mathcal{O}(Nd \cdot C_f)$, yielding a theoretical speedup of $N^{d-1}$ over standard PINNs.
+
+\subsubsection{Empirical Results}
+
+To illustrate the computational advantage, we compare networks of similar size: a standard PINN with layers $[2, 64, 64, \ldots, 2]$ (10 hidden layers) versus a SPINN with 2 body-networks of width 64, 10 hidden layers, and rank 32. Both have approximately 40k parameters.
+
+Table~\ref{tab:spinn_efficiency} shows the FLOPs comparison for forward pass and gradient computation. At $N=512$ (262k grid points), SPINN achieves a $357\times$ reduction in FLOPs for the forward pass and $823\times$ for gradient computation.
+
+\begin{table}[ht]
+\centering
+\caption{SPINN vs PINN computational cost comparison ($d=2$, $m=2$).}
+\label{tab:spinn_efficiency}
+\begin{tabular}{lccc}
+    \toprule
+    & \multicolumn{2}{c}{\textbf{FLOPs}} & \textbf{Speedup} \\
+    \cmidrule(lr){2-3}
+    $N$ & PINN & SPINN & \\
+    \midrule
+    \multicolumn{4}{c}{\textit{Forward Pass}} \\
+    \midrule
+    64 & $4.79\times10^8$ & $1.12\times10^7$ & $43\times$ \\
+    256 & $7.67\times10^9$ & $4.48\times10^7$ & $171\times$ \\
+    512 & $3.91\times10^{10}$ & $1.10\times10^8$ & $357\times$ \\
+    \midrule
+    \multicolumn{4}{c}{\textit{Gradient}} \\
+    \midrule
+    64 & $1.46\times10^9$ & $1.46\times10^7$ & $100\times$ \\
+    256 & $2.33\times10^{10}$ & $5.82\times10^7$ & $400\times$ \\
+    512 & $1.19\times10^{11}$ & $1.45\times10^8$ & $823\times$ \\
+    \bottomrule
+\end{tabular}
+\end{table}
+
+However, real-world execution time depends on many additional factors beyond FLOPs: memory bandwidth, kernel launch overhead, JIT compilation caching, and hardware utilization. For operations under approximately $10^{10}$ FLOPs, these overheads often dominate, making measured speedups smaller than theoretical predictions. The time advantage becomes pronounced primarily for gradient computations at large batch sizes where compute dominates. In our benchmarks, measurable time speedups ($\sim16\times$) appeared only for gradient computation at $N \geq 256$.
+
+Given the difficulty of obtaining reliable hardware-independent benchmarks (due to caching, warm-up effects, and hardware variability), the most practical approach is to directly compare performance on the target application with the available hardware.
+
+%------------------------------------------------------------------------------
+\subsection{Geometric Constraints}
+\label{sec:spinn_geometry}
+
+The computational efficiency of SPINN comes with geometric constraints stemming from the factorized sampling requirement.
+
+\paragraph{Hypercube domains.} Since output points are formed as the Cartesian product of coordinate samples, they must lie on a lattice-like structure. This restricts the domain to hypercube-like geometries, which can be problematic for complex domains where generated points may fall outside the physical region.
+
+\paragraph{Sampling strategies.} The factorization requirement also limits the use of adaptive sampling strategies~\cite{wuComprehensiveStudyNonadaptive2023,nguyenFixedbudgetOnlineAdaptive2023}, which typically require flexibility in point placement that the Cartesian structure cannot provide.
+
+These limitations can be addressed through geometry mapping techniques that transform a reference hypercube to the target domain, as detailed in Section~\ref{sec:geometry_mapping}.
