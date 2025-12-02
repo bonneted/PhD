@@ -6,6 +6,8 @@ src/phd/config/__init__.py
 src/phd/config/plotting.py
 src/phd/data/Allen_Cahn.mat
 src/phd/data/__init__.py
+src/phd/geo/__init__.py
+src/phd/geo/mapping.py
 src/phd/models/__init__.py
 src/phd/models/allen_cahn.py
 src/phd/models/cm/__init__.py

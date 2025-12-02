@@ -104,6 +104,7 @@ class PlottingConfig:
             "font.size": self.axes_font_size,
             "figure.titlesize": self.title_font_size,
             "axes.titlesize": self.title_font_size,
+            "axes.labelsize": self.title_font_size,
             # "xtick.labelsize": self.min_font_size,
             # "ytick.labelsize": self.min_font_size,
         })
