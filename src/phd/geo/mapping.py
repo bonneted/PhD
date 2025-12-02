@@ -58,10 +58,10 @@ def checkGeo(leftX,leftY,rightX,rightY,lowX,lowY,upX,upY,tolJoint):
 	       errMessageParallel
 	print(arrow+'BC nodes pass!')
 def plotBC(ax,x,y):
-	ax.plot(x[:,0],y[:,0],'-o')#,color=cleft)    # left BC
-	ax.plot(x[:,-1],y[:,-1],'-o')#,color=cright) # right BC
-	ax.plot(x[0,:],y[0,:],'-o')#,color=clow)    	# low BC
-	ax.plot(x[-1,:],y[-1,:],'-o')#,color=cup)  	# up BC
+	ax.plot(x[:,0],y[:,0],'-o',color=cleft)    # left BC
+	ax.plot(x[:,-1],y[:,-1],'-o',color=cright) # right BC
+	ax.plot(x[0,:],y[0,:],'-o',color=clow)    	# low BC
+	ax.plot(x[-1,:],y[-1,:],'-o',color=cup)  	# up BC
 	return ax
 
 def plotMesh(ax,x,y,width=0.08):
