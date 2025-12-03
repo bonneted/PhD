@@ -7,7 +7,8 @@ from pathlib import Path
 from phd.models.cm.utils import (
     transform_coords, linear_elasticity_pde, VariableValue, VariableArray
 )
-from phd.utils import ResultsManager
+from phd.utils import ResultsManager, save_run_data as _save_run_data, continue_training
+from phd.utils.save_util import load_run as _load_run
 from phd.config import get_current_config
 # Import plotting functions from cm/plot_util (which re-exports general utils)
 from phd.models.cm.plot_util import (
@@ -278,6 +279,13 @@ def train(config=None):
         external_trainable_variables.append(lmbd_trainable)
         external_trainable_variables.append(mu_trainable)
     
+    # --- Restore external trainable variables from saved state ---
+    if cfg.restored_external_vars is not None:
+        print("Restoring external trainable variables...")
+        for i, (var, val) in enumerate(zip(external_trainable_variables, cfg.restored_external_vars.values())):
+            var.value = val
+            print(f"  Restored var_{i}: shape={val.shape if hasattr(val, 'shape') else 'scalar'}")
+    
     # =========================================================================
     # Define PDE function
     # CRITICAL: unknowns order is [SA_pde, SA_mat?, lmbd, mu] based on how we built the list
@@ -484,259 +492,29 @@ def train(config=None):
 
     return results
 
+
+# =============================================================================
+# Save/Load wrappers - delegate to phd.utils.save_util with problem-specific functions
+# =============================================================================
+
 def save_run_data(results, results_manager=None):
-    """
-    Manually save run data to disk.
-    
-    Saves a unified run_data.json with structure:
-    {
-        "config": {...},           # Training configuration
-        "run_metrics": {...},      # elapsed_time, iterations_per_sec, etc.
-        "evaluation": {...}        # l2_error, field_l2_errors, etc.
-    }
-    
-    Also saves binary data (model params, fields, variables) separately.
-    
-    Args:
-        results (dict): The dictionary returned by train().
-        results_manager (ResultsManager, optional): If provided, use this manager. 
-                                                    Otherwise use the one from the run.
-    """
-    import json
-    
-    if results_manager is None:
-        # Re-create manager from run_dir if possible, or just use the path
-        from phd.utils import ResultsManager
-        from pathlib import Path
-        run_dir = Path(results["run_dir"])
-        results_manager = ResultsManager(run_name=run_dir.name, base_dir=run_dir.parent)
-    
-    results_manager.ensure_dir()
+    """Save run data to disk. See phd.utils.save_util.save_run_data for details."""
+    return _save_run_data(results, results_manager)
 
-    # Build unified run_data structure
-    run_data = {
-        "config": results.get("config", {}),
-        "run_metrics": {
-            "elapsed_time": results.get("elapsed_time"),
-            "iterations_per_sec": results.get("iterations_per_sec"),
-            "run_dir": results.get("run_dir"),
-        },
-        "evaluation": {},
-    }
-    
-    # Add evaluation results if present (excluding numpy arrays)
-    if "evaluation" in results and results["evaluation"]:
-        eval_results = results["evaluation"]
-        run_data["evaluation"] = {
-            "l2_error": eval_results.get("l2_error"),
-            "field_l2_errors": eval_results.get("field_l2_errors"),
-            "ngrid": eval_results.get("ngrid"),
-        }
-    
-    # Save unified run_data.json
-    run_data_file = results_manager.get_path("run_data.json")
-    with open(run_data_file, "w") as f:
-        json.dump(run_data, f, indent=2, default=str)
-    print(f"Saved run data to {run_data_file}")
-
-    # Save loss history (binary format for efficiency)
-    if "losshistory" in results:
-        results_manager.save_loss_history(results["losshistory"])
-
-    # Save model parameters
-    if "model" in results and results["model"] is not None:
-        model = results["model"]
-        params_file = results_manager.get_path("model_params.npz")
-        save_dict = {"params": model.net.params}
-        # Also save external trainable variables if they exist
-        if hasattr(model, 'external_trainable_variables') and model.external_trainable_variables:
-            external_vars = {f"var_{i}": v.value for i, v in enumerate(model.external_trainable_variables)}
-            save_dict["external_vars"] = external_vars
-        np.savez(params_file, **{k: np.array(v, dtype=object) for k, v in save_dict.items()})
-        print(f"Saved model parameters to {params_file}")
-
-    # Save variables
-    if "variable_value_callback" in results and results["variable_value_callback"]:
-        cb = results["variable_value_callback"]
-        if cb.history:
-            var_file = results_manager.get_path("variables.dat")
-            with open(var_file, "w") as f:
-                for row in cb.history:
-                    # row is [epoch, val1, val2, ...]
-                    # Flatten if necessary
-                    flat_row = []
-                    for item in row:
-                        if isinstance(item, (list, tuple, np.ndarray)):
-                            flat_row.extend(item)
-                        else:
-                            flat_row.append(item)
-                    line = " ".join(map(str, flat_row))
-                    f.write(line + "\n")
-
-    # Save variable arrays (SA weights) if they exist
-    if "variable_array_callback" in results and results["variable_array_callback"]:
-        cb = results["variable_array_callback"]
-        if cb.history:
-            print(f"Saving {len(cb.history)} SA weight snapshots...")
-            cb.save_all(results_manager.get_path("variable_arrays.npz"))
-
-    # Save fields if they exist in memory
-    if "field_saver" in results and results["field_saver"]:
-        saver = results["field_saver"]
-        if saver.history:
-            # Force save all history to disk
-            print(f"Saving {len(saver.history)} field snapshots to {results_manager.run_dir}/fields/...")
-            
-            # Ensure directory exists
-            fields_dir = results_manager.get_path("fields")
-            fields_dir.mkdir(exist_ok=True)
-            
-            # Save steps
-            steps = [h[0] for h in saver.history]
-            np.savetxt(fields_dir / "steps.txt", np.array(steps, dtype=int), fmt="%d")
-            
-            # Save each snapshot
-            for snapshot in saver.history:
-                step = snapshot[0]
-                fields = snapshot[1]
-                np.savez_compressed(fields_dir / f"fields_{step}.npz", **fields)
-    
-    print("Data saved successfully.")
 
 def load_run(run_dir, restore_model=False):
     """
-    Load a saved run from disk and return a dictionary compatible with train() output.
-    
-    Loads from run_data.json (config, run_metrics, evaluation) and binary files
-    (loss history, model params, fields, variables).
+    Load a saved run from disk.
     
     Args:
         run_dir: Path to the run directory
         restore_model: If True, reconstruct the model using saved parameters
     
     Returns:
-        dict matching train() output structure:
-        - config, losshistory, run_dir, elapsed_time, iterations_per_sec,
-        - evaluation, field_saver, variable_value_callback,
-        - model_params, external_vars, and optionally model
+        dict matching train() output structure
     """
-    import json
-    from phd.utils import ResultsManager
-    run_dir = Path(run_dir)
-    rm = ResultsManager(base_dir=run_dir.parent, run_name=run_dir.name)
-    
-    # Try to load unified run_data.json first
-    run_data_file = run_dir / "run_data.json"
-    config = {}
-    run_metrics = {}
-    evaluation = {}
-    
-    if run_data_file.exists():
-        with open(run_data_file, "r") as f:
-            run_data = json.load(f)
-        config = run_data.get("config", {})
-        run_metrics = run_data.get("run_metrics", {})
-        evaluation = run_data.get("evaluation", {})
-    else:
-        # Fallback: try to load legacy config.json
-        try:
-            config = rm.load_config()
-        except FileNotFoundError:
-            print(f"Warning: Neither run_data.json nor config.json found in {run_dir}")
+    return _load_run(run_dir, restore_model=restore_model, train_fn=train, eval_fn=eval)
 
-    # Load Loss History
-    losshistory = None
-    try:
-        steps, loss_train = rm.load_loss_history()
-        metrics_test = np.array(loss_train)[:, -1:] if len(loss_train) > 0 else []
-        # Create a mock LossHistory object
-        class MockLossHistory:
-            def __init__(self, steps, loss_train, metrics_test):
-                self.steps = steps
-                self.loss_train = loss_train
-                self.loss_test = loss_train
-                self.metrics_test = metrics_test
-        losshistory = MockLossHistory(steps, loss_train, metrics_test)
-    except Exception as e:
-        print(f"Warning: Could not load loss history: {e}")
-
-    # Load Variables
-    variable_value_callback = None
-    var_file = run_dir / "variables.dat"
-    if var_file.exists():
-        try:
-            var_data = np.loadtxt(var_file)
-            if var_data.ndim == 1: var_data = var_data.reshape(1, -1)
-            # Create a mock VariableValue callback
-            variable_value_callback = VariableValue([], filename=None)
-            variable_value_callback.history = var_data.tolist()
-        except Exception as e:
-            print(f"Warning: Could not load variables: {e}")
-
-    # Load model parameters
-    model_params = None
-    external_vars = None
-    params_file = run_dir / "model_params.npz"
-    if params_file.exists():
-        try:
-            with np.load(params_file, allow_pickle=True) as f:
-                model_params = f["params"].item()  # Restore pytree
-                if "external_vars" in f:
-                    external_vars = f["external_vars"].item()
-        except Exception as e:
-            print(f"Warning: Could not load model params: {e}")
-
-    # Load Fields (Mock FieldSaver)
-    from phd.models.cm.utils import FieldSaver
-    field_saver = FieldSaver(period=1, x_eval=None, results_manager=rm, field_names={}, save_to_disk=False)
-    field_saver.history = []
-    
-    fields_dir = run_dir / "fields"
-    if fields_dir.exists():
-        steps_file = fields_dir / "steps.txt"
-        if steps_file.exists():
-            field_steps = np.loadtxt(steps_file, dtype=int)
-            if field_steps.ndim == 0: field_steps = np.array([field_steps])
-            
-            for step in field_steps:
-                file_path = fields_dir / f"fields_{step}.npz"
-                if file_path.exists():
-                    with np.load(file_path) as f:
-                        fields = {k: f[k] for k in f.keys()}
-                        field_saver.history.append((step, fields))
-
-    # Build result dict matching train() output structure
-    result = {
-        "config": config,
-        "losshistory": losshistory,
-        "run_dir": run_metrics.get("run_dir", str(run_dir)),
-        "elapsed_time": run_metrics.get("elapsed_time"),
-        "iterations_per_sec": run_metrics.get("iterations_per_sec"),
-        "evaluation": evaluation,
-        "field_saver": field_saver,
-        "variable_value_callback": variable_value_callback,
-        "model_params": model_params,
-        "external_vars": external_vars,
-        "model": None,
-        "variable_array_callback": None,
-    }
-    
-    # Optionally restore the model
-    if restore_model and model_params is not None and config:
-        print("Restoring model from saved parameters...")
-        restore_config = {
-            **config,
-            "n_iter": 0,
-            "restored_params": model_params,
-            "restored_external_vars": external_vars,
-            "save_on_disk": False,
-        }
-        restored = train(restore_config)
-        result["model"] = restored["model"]
-        # Re-evaluate with restored model for fresh evaluation data
-        result["evaluation"] = eval(config, restored["model"])
-    
-    return result
 
 # =============================================================================
 # Plotting wrappers - delegate to cm/plot_util with problem-specific exact_solution
