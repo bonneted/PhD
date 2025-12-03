@@ -4,16 +4,22 @@ import jax
 import jax.numpy as jnp
 import time
 from pathlib import Path
-import matplotlib.pyplot as plt
 from phd.models.cm.utils import (
     transform_coords, linear_elasticity_pde, VariableValue, VariableArray
 )
 from phd.utils import ResultsManager
 from phd.config import get_current_config
+# Import plotting functions from cm/plot_util (which re-exports general utils)
 from phd.models.cm.plot_util import (
     init_figure, init_metrics, update_metrics, 
     init_parameter_evolution, update_parameter_evolution, 
-    plot_field, add_colorbar
+    plot_field, add_colorbar, subsample_frames,
+    # CM-specific plotting
+    init_plot as _init_plot,
+    plot_results as _plot_results,
+    animate,
+    plot_compare,
+    LATEX_FIELD_NAMES,
 )
 
 DEFAULT_CONFIG = {
@@ -58,10 +64,6 @@ DEFAULT_CONFIG = {
     "restored_external_vars": None,  # External trainable variables to restore (SA weights, material params)
 }
 
-LATEX_FIELD_NAMES = {
-    "Ux": r"$u_x$", "Uy": r"$u_y$",
-    "Sxx": r"$\sigma_{xx}$", "Syy": r"$\sigma_{yy}$", "Sxy": r"$\sigma_{xy}$"
-}
 
 class Config:
     def __init__(self, **entries):
@@ -206,116 +208,6 @@ def eval(config, model, ngrid=100):
         "ngrid": ngrid,
     }
 
-
-def load_run(run_dir, restore_model=False):
-    """
-    Load a saved run from disk and return a dictionary compatible with train() output.
-    
-    Args:
-        run_dir: Path to the run directory
-        restore_model: If True, reconstruct the model using saved parameters
-    
-    Returns:
-        dict with config, losshistory, field_saver, variable_value_callback,
-        and optionally model and evaluation results
-    """
-    from phd.utils import ResultsManager
-    run_dir = Path(run_dir)
-    rm = ResultsManager(base_dir=run_dir.parent, run_name=run_dir.name)
-    
-    # Load Config
-    try:
-        config = rm.load_config()
-    except FileNotFoundError:
-        print(f"Warning: config.json not found in {run_dir}")
-        config = {}
-
-    # Load Loss History
-    try:
-        steps, loss_train = rm.load_loss_history()
-        metrics_test = np.array(loss_train)[:, -1:] if len(loss_train) > 0 else []
-        # Create a mock LossHistory object
-        class MockLossHistory:
-            def __init__(self, steps, loss_train, metrics_test):
-                self.steps = steps
-                self.loss_train = loss_train
-                self.loss_test = loss_train
-                self.metrics_test = metrics_test
-        losshistory = MockLossHistory(steps, loss_train, metrics_test)
-    except Exception as e:
-        print(f"Warning: Could not load loss history: {e}")
-        losshistory = None
-
-    # Load Variables
-    variable_value_callback = None
-    var_file = run_dir / "variables.dat"
-    if var_file.exists():
-        try:
-            var_data = np.loadtxt(var_file)
-            if var_data.ndim == 1: var_data = var_data.reshape(1, -1)
-            # Create a mock VariableValue callback
-            variable_value_callback = VariableValue([], filename=None)
-            variable_value_callback.history = var_data.tolist()
-        except Exception as e:
-            print(f"Warning: Could not load variables: {e}")
-
-    # Load model parameters
-    model_params = None
-    external_vars = None
-    params_file = run_dir / "model_params.npz"
-    if params_file.exists():
-        try:
-            with np.load(params_file, allow_pickle=True) as f:
-                model_params = f["params"].item()  # Restore pytree
-                if "external_vars" in f:
-                    external_vars = f["external_vars"].item()
-        except Exception as e:
-            print(f"Warning: Could not load model params: {e}")
-
-    # Load Fields (Mock FieldSaver)
-    from phd.models.cm.utils import FieldSaver
-    field_saver = FieldSaver(period=1, x_eval=None, results_manager=rm, field_names={}, save_to_disk=False)
-    field_saver.history = []
-    
-    fields_dir = run_dir / "fields"
-    if fields_dir.exists():
-        steps_file = fields_dir / "steps.txt"
-        if steps_file.exists():
-            field_steps = np.loadtxt(steps_file, dtype=int)
-            if field_steps.ndim == 0: field_steps = np.array([field_steps])
-            
-            for step in field_steps:
-                file_path = fields_dir / f"fields_{step}.npz"
-                if file_path.exists():
-                    with np.load(file_path) as f:
-                        fields = {k: f[k] for k in f.keys()}
-                        field_saver.history.append((step, fields))
-
-    result = {
-        "config": config,
-        "losshistory": losshistory,
-        "run_dir": str(run_dir),
-        "field_saver": field_saver,
-        "variable_value_callback": variable_value_callback,
-        "model_params": model_params,
-        "external_vars": external_vars,
-    }
-    
-    # Optionally restore the model
-    if restore_model and model_params is not None and config:
-        print("Restoring model from saved parameters...")
-        restore_config = {
-            **config,
-            "n_iter": 0,
-            "restored_params": model_params,
-            "restored_external_vars": external_vars,
-            "save_on_disk": False,
-        }
-        restored = train(restore_config)
-        result["model"] = restored["model"]
-        result["evaluation"] = eval(config, restored["model"])
-    
-    return result
 
 def train(config=None):
     cfg = DEFAULT_CONFIG.copy()
@@ -596,11 +488,22 @@ def save_run_data(results, results_manager=None):
     """
     Manually save run data to disk.
     
+    Saves a unified run_data.json with structure:
+    {
+        "config": {...},           # Training configuration
+        "run_metrics": {...},      # elapsed_time, iterations_per_sec, etc.
+        "evaluation": {...}        # l2_error, field_l2_errors, etc.
+    }
+    
+    Also saves binary data (model params, fields, variables) separately.
+    
     Args:
         results (dict): The dictionary returned by train().
         results_manager (ResultsManager, optional): If provided, use this manager. 
                                                     Otherwise use the one from the run.
     """
+    import json
+    
     if results_manager is None:
         # Re-create manager from run_dir if possible, or just use the path
         from phd.utils import ResultsManager
@@ -610,11 +513,33 @@ def save_run_data(results, results_manager=None):
     
     results_manager.ensure_dir()
 
-    # Save config
-    if "config" in results:
-        results_manager.save_config(results["config"])
+    # Build unified run_data structure
+    run_data = {
+        "config": results.get("config", {}),
+        "run_metrics": {
+            "elapsed_time": results.get("elapsed_time"),
+            "iterations_per_sec": results.get("iterations_per_sec"),
+            "run_dir": results.get("run_dir"),
+        },
+        "evaluation": {},
+    }
+    
+    # Add evaluation results if present (excluding numpy arrays)
+    if "evaluation" in results and results["evaluation"]:
+        eval_results = results["evaluation"]
+        run_data["evaluation"] = {
+            "l2_error": eval_results.get("l2_error"),
+            "field_l2_errors": eval_results.get("field_l2_errors"),
+            "ngrid": eval_results.get("ngrid"),
+        }
+    
+    # Save unified run_data.json
+    run_data_file = results_manager.get_path("run_data.json")
+    with open(run_data_file, "w") as f:
+        json.dump(run_data, f, indent=2, default=str)
+    print(f"Saved run data to {run_data_file}")
 
-    # Save loss history
+    # Save loss history (binary format for efficiency)
     if "losshistory" in results:
         results_manager.save_loss_history(results["losshistory"])
 
@@ -678,369 +603,153 @@ def save_run_data(results, results_manager=None):
     
     print("Data saved successfully.")
 
-
-def _compute_metrics_from_history(losshistory):
-    """Derive named metrics from LossHistory object.
-    
-    loss_train structure:
-    - Forward: [pde_x, pde_y, mat_x, mat_y, mat_xy]
-    - Inverse: [pde_x, pde_y, mat_x, mat_y, mat_xy, DIC_x, DIC_y]
-    
-    metrics_test contains the L2 relative error separately.
+def load_run(run_dir, restore_model=False):
     """
-    steps = np.array(losshistory.steps)
-    loss_train = np.array([np.array(l) for l in losshistory.loss_train])
-    metrics_test = np.array(losshistory.metrics_test).squeeze()
-    n_cols = loss_train.shape[1]
+    Load a saved run from disk and return a dictionary compatible with train() output.
     
-    metrics = {
-        "steps": steps,
-        "Residual": metrics_test,
-        "PDE Loss": np.mean(loss_train[:, 0:2], axis=1),
-        "Material Loss": np.mean(loss_train[:, 2:5], axis=1),
-        "Total Loss": np.mean(loss_train, axis=1),
-    }
-    
-    if n_cols == 7:  # Inverse problem with DIC
-        metrics["DIC Loss"] = np.mean(loss_train[:, 5:7], axis=1)
-    
-    return metrics
-
-def process_results(results, plot_fields=None):
-    """
-    Process results dictionary and return data needed for plotting.
-    
-    Returns:
-        steps: array of step indices (from field_saver if available)
-        metrics: dict of metric arrays (includes its own 'steps' key)
-        vars_history: dict of variable histories
-        fields_init: dict of field initialization data (reference values, titles)
-        get_snapshot: function that returns snapshot at given index
-        meshes: tuple (Xmesh, Ymesh)
-        config: config dictionary
-        fields_dict: dict of field arrays (for animation frame access)
-    """
-    config = results["config"]
-    metrics = _compute_metrics_from_history(results["losshistory"])
-    
-    # Get field data and steps from field_saver
-    fields_dict = {}
-    field_saver = results.get("field_saver")
-    if field_saver and field_saver.history:
-        steps = np.array([h[0] for h in field_saver.history])
-        first_snapshot = field_saver.history[0][1]
-        for name in first_snapshot.keys():
-            fields_dict[name] = np.array([h[1][name] for h in field_saver.history])
-    else:
-        steps = metrics["steps"]
-    
-    # Get variable history
-    vars_history = {}
-    var_cb = results.get("variable_value_callback")
-    if var_cb and var_cb.history:
-        var_hist = np.array(var_cb.history)
-        if var_hist.ndim == 1: 
-            var_hist = var_hist.reshape(1, -1)
-        vars_history["lambda"] = {"steps": var_hist[:, 0], "values": var_hist[:, 1]}
-        vars_history["mu"] = {"steps": var_hist[:, 0], "values": var_hist[:, 2]}
-
-    # Prepare mesh grid
-    ngrid = int(np.sqrt(fields_dict[next(iter(fields_dict))].shape[1])) if fields_dict else 100
-    x_lin = np.linspace(0, 1, ngrid)
-    Xmesh, Ymesh = np.meshgrid(x_lin, x_lin, indexing="ij")
-
-    # Field names and exact solution
-    all_field_names = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
-    field_names = [f for f in (plot_fields or all_field_names) if f in fields_dict]
-    
-    # Compute exact solution for reference
-    lmbd, mu, Q = config.get("lmbd", 1.0), config.get("mu", 0.5), config.get("Q", 4.0)
-    net_type = config.get("net_type", "SPINN")
-    X_input = [x_lin.reshape(-1, 1)] * 2 if net_type == "SPINN" else np.stack((Xmesh.ravel(), Ymesh.ravel()), axis=1)
-    exact_vals = exact_solution(X_input, lmbd, mu, Q, net_type)
-    
-    fields_init = {
-        name: {
-            "data": [exact_vals[:, all_field_names.index(name)].reshape(ngrid, ngrid)],
-            "title": LATEX_FIELD_NAMES.get(name, name),
-        }
-        for name in field_names
-    }
-        
-    def get_snapshot(idx):
-        return {
-            name: [
-                fields_init[name]["data"][0],
-                fields_dict[name][idx].reshape(ngrid, ngrid),
-                fields_dict[name][idx].reshape(ngrid, ngrid) - fields_init[name]["data"][0]
-            ]
-            for name in field_names if name in fields_dict
-        }
-        
-    return steps, metrics, vars_history, fields_init, get_snapshot, (Xmesh, Ymesh), config, fields_dict
-
-def subsample_frames(n_frames, factors=None):
-    """
-    Generate subsampled frame indices for animation.
+    Loads from run_data.json (config, run_metrics, evaluation) and binary files
+    (loss history, model params, fields, variables).
     
     Args:
-        n_frames: Total number of frames available
-        factors: List of subsampling factors for different regions.
-                 e.g., [1, 2, 3] means: first third at full rate, 
-                 second third at 1/2, last third at 1/3.
-                 If None, returns all frames.
+        run_dir: Path to the run directory
+        restore_model: If True, reconstruct the model using saved parameters
     
     Returns:
-        List of frame indices
-    
-    Example:
-        >>> subsample_frames(100, [1, 2, 5])  # Dense at start, sparse at end
+        dict matching train() output structure:
+        - config, losshistory, run_dir, elapsed_time, iterations_per_sec,
+        - evaluation, field_saver, variable_value_callback,
+        - model_params, external_vars, and optionally model
     """
-    if factors is None:
-        return list(range(n_frames))
+    import json
+    from phd.utils import ResultsManager
+    run_dir = Path(run_dir)
+    rm = ResultsManager(base_dir=run_dir.parent, run_name=run_dir.name)
     
-    n_regions = len(factors)
-    region_size = n_frames // n_regions
-    frame_indices = []
+    # Try to load unified run_data.json first
+    run_data_file = run_dir / "run_data.json"
+    config = {}
+    run_metrics = {}
+    evaluation = {}
     
-    for i, factor in enumerate(factors):
-        start = i * region_size
-        end = (i + 1) * region_size if i < n_regions - 1 else n_frames
-        frame_indices.extend(range(start, end, factor))
+    if run_data_file.exists():
+        with open(run_data_file, "r") as f:
+            run_data = json.load(f)
+        config = run_data.get("config", {})
+        run_metrics = run_data.get("run_metrics", {})
+        evaluation = run_data.get("evaluation", {})
+    else:
+        # Fallback: try to load legacy config.json
+        try:
+            config = rm.load_config()
+        except FileNotFoundError:
+            print(f"Warning: Neither run_data.json nor config.json found in {run_dir}")
+
+    # Load Loss History
+    losshistory = None
+    try:
+        steps, loss_train = rm.load_loss_history()
+        metrics_test = np.array(loss_train)[:, -1:] if len(loss_train) > 0 else []
+        # Create a mock LossHistory object
+        class MockLossHistory:
+            def __init__(self, steps, loss_train, metrics_test):
+                self.steps = steps
+                self.loss_train = loss_train
+                self.loss_test = loss_train
+                self.metrics_test = metrics_test
+        losshistory = MockLossHistory(steps, loss_train, metrics_test)
+    except Exception as e:
+        print(f"Warning: Could not load loss history: {e}")
+
+    # Load Variables
+    variable_value_callback = None
+    var_file = run_dir / "variables.dat"
+    if var_file.exists():
+        try:
+            var_data = np.loadtxt(var_file)
+            if var_data.ndim == 1: var_data = var_data.reshape(1, -1)
+            # Create a mock VariableValue callback
+            variable_value_callback = VariableValue([], filename=None)
+            variable_value_callback.history = var_data.tolist()
+        except Exception as e:
+            print(f"Warning: Could not load variables: {e}")
+
+    # Load model parameters
+    model_params = None
+    external_vars = None
+    params_file = run_dir / "model_params.npz"
+    if params_file.exists():
+        try:
+            with np.load(params_file, allow_pickle=True) as f:
+                model_params = f["params"].item()  # Restore pytree
+                if "external_vars" in f:
+                    external_vars = f["external_vars"].item()
+        except Exception as e:
+            print(f"Warning: Could not load model params: {e}")
+
+    # Load Fields (Mock FieldSaver)
+    from phd.models.cm.utils import FieldSaver
+    field_saver = FieldSaver(period=1, x_eval=None, results_manager=rm, field_names={}, save_to_disk=False)
+    field_saver.history = []
     
-    # Ensure last frame is included
-    if frame_indices[-1] != n_frames - 1:
-        frame_indices.append(n_frames - 1)
+    fields_dir = run_dir / "fields"
+    if fields_dir.exists():
+        steps_file = fields_dir / "steps.txt"
+        if steps_file.exists():
+            field_steps = np.loadtxt(steps_file, dtype=int)
+            if field_steps.ndim == 0: field_steps = np.array([field_steps])
+            
+            for step in field_steps:
+                file_path = fields_dir / f"fields_{step}.npz"
+                if file_path.exists():
+                    with np.load(file_path) as f:
+                        fields = {k: f[k] for k in f.keys()}
+                        field_saver.history.append((step, fields))
+
+    # Build result dict matching train() output structure
+    result = {
+        "config": config,
+        "losshistory": losshistory,
+        "run_dir": run_metrics.get("run_dir", str(run_dir)),
+        "elapsed_time": run_metrics.get("elapsed_time"),
+        "iterations_per_sec": run_metrics.get("iterations_per_sec"),
+        "evaluation": evaluation,
+        "field_saver": field_saver,
+        "variable_value_callback": variable_value_callback,
+        "model_params": model_params,
+        "external_vars": external_vars,
+        "model": None,
+        "variable_array_callback": None,
+    }
     
-    return frame_indices
+    # Optionally restore the model
+    if restore_model and model_params is not None and config:
+        print("Restoring model from saved parameters...")
+        restore_config = {
+            **config,
+            "n_iter": 0,
+            "restored_params": model_params,
+            "restored_external_vars": external_vars,
+            "save_on_disk": False,
+        }
+        restored = train(restore_config)
+        result["model"] = restored["model"]
+        # Re-evaluate with restored model for fresh evaluation data
+        result["evaluation"] = eval(config, restored["model"])
+    
+    return result
+
+# =============================================================================
+# Plotting wrappers - delegate to cm/plot_util with problem-specific exact_solution
+# =============================================================================
 
 def init_plot(results, iteration=-1, **opts):
-    """
-    Initialize plot and return figure, axes, and artists for animation.
-    
-    Options (pass as kwargs):
-        fields: list of field names to plot, e.g. ["Ux", "Uy"]. None = all.
-        show_metrics: bool, whether to show metrics column (default True).
-        show_residual: bool, whether to show residual row (default True).
-        dpi: figure dpi (default 100).
-        metrics: optional list of metric names to draw in the metrics subplot.
-    
-    Returns:
-        fig: matplotlib figure
-        artists: dict containing all updatable artists and data for animation
-    """
-    o = {"fields": None, "show_metrics": True, "show_residual": True, "dpi": 100, "metrics": ["Residual"], **opts}
-    
-    steps, metrics, vars_history, fields_init, get_snapshot_fn, (mx, my), config, fields_dict = process_results(results, plot_fields=o["fields"])
-    if iteration == -1: iteration = len(steps) - 1
-    current_step = steps[iteration]
-    
-    field_names = list(fields_init.keys())
-    n_fields = len(field_names)
-    n_rows = 2 + int(o["show_residual"])
-    n_cols = int(o["show_metrics"]) + n_fields
-    
-    figwidth = get_current_config().page_width * (n_cols / 4)
-    figsize = (figwidth, figwidth * n_rows / n_cols + 0.05*get_current_config().page_width)
-    fig, ax = init_figure(n_rows, n_cols, dpi=o["dpi"], figsize=figsize)
-    col_offset = int(o["show_metrics"])
-    
-    # Store artists for animation
-    artists = {
-        "steps": steps,
-        "metrics": metrics,
-        "vars_history": vars_history,
-        "fields_init": fields_init,
-        "get_snapshot_fn": get_snapshot_fn,
-        "meshes": (mx, my),
-        "config": config,
-        "field_names": field_names,
-        "show_metrics": o["show_metrics"],
-        "show_residual": o["show_residual"],
-        "col_offset": col_offset,
-        "ax": ax,
-        "var_artists": {},
-        "metrics_artists": {},
-        "field_artists": [],
-    }
-    
-    # --- Column 0: Variables & Metrics (if enabled) ---
-    if o["show_metrics"]:
-        lmbd_true, mu_true = config.get("lmbd", 1.0), config.get("mu", 0.5)
-        get_hist = lambda name: (vars_history[name]["steps"], vars_history[name]["values"]) if name in vars_history else (steps, np.zeros_like(steps))
-        
-        has_variables = False
-        for row, (var, true_val, lbl, clr) in enumerate([("lambda", lmbd_true, r"$\lambda$", 'b'), ("mu", mu_true, r"$\mu$", 'r')]):
-            ax_var = ax[row, 0]
-            ax_var.set_box_aspect(1)  # Square aspect ratio
-            if var not in vars_history:
-                ax_var.set_visible(False)
-            else:
-                has_variables = True
-                s, v = get_hist(var)
-                art = init_parameter_evolution(ax_var, s, v, true_val=true_val, label=lbl, color=clr, show_xlabel=False)
-                artists["var_artists"][var] = art
-                update_parameter_evolution(current_step, art)
+    """Initialize plot for analytical plate results. See cm.plot_util.init_plot for details."""
+    return _init_plot(results, exact_solution, iteration=iteration, **opts)
 
-        # Metrics in last row of column 0
-        ax_loss = ax[n_rows - 1, 0]
-        ax_loss.set_box_aspect(1)  # Square aspect ratio
-        # Use label instead of title if there are variables being plotted
-        # Use metrics["steps"] which matches the metrics arrays length
-        artists["metrics_artists"] = init_metrics(ax_loss, metrics["steps"], metrics, selected_metrics=o["metrics"], use_title=not has_variables)
-        update_metrics(current_step, artists["metrics_artists"])
-    
-    # --- Field columns ---
-    snapshot = get_snapshot_fn(iteration)
-    
-    for i, fname in enumerate(field_names):
-        col = col_offset + i
-        data_list = snapshot[fname]
-        title = fields_init[fname].get("title", fname)
-        title_pred = title[:-1] + "^*$" if title.endswith("$") else title + "*"
-        
-        # Row 0: Reference
-        im_ref = plot_field(ax[0, col], mx, my, data_list[0], title=title, cmap="viridis")
-        add_colorbar(fig, ax[0, col], im_ref, location="top", shift=0.05)
-        
-        # Row 1: Prediction
-        im_pred = plot_field(ax[1, col], mx, my, data_list[1], title=title_pred, cmap="viridis", vmin=im_ref.get_clim()[0], vmax=im_ref.get_clim()[1])
-        
-        # Row 2: Error (if enabled)
-        im_err = None
-        if o["show_residual"]:
-            title_err = rf"${title[1:-1]} - {title_pred[1:-1]}$"
-            im_err = plot_field(ax[2, col], mx, my, data_list[2], title=title_err, cmap="coolwarm")
-            lim = np.nanmax(np.abs(data_list[2]))
-            im_err.set_clim(-lim, lim)
-            add_colorbar(fig, ax[2, col], im_err, location="bottom", shift=0.02)
-        
-        artists["field_artists"].append({
-            "im_ref": im_ref,
-            "im_pred": im_pred,
-            "im_err": im_err,
-            "name": fname
-        })
-    
-    return fig, artists
-
-def update_frame(frame_idx, fig, artists):
-    """
-    Update the figure for a given frame index.
-    
-    Args:
-        frame_idx: Index into the steps array
-        fig: matplotlib figure
-        artists: dict returned by init_plot
-    """
-    steps = artists["steps"]
-    current_step = steps[frame_idx]
-    
-    fig.suptitle(f"Iteration: {int(current_step)}", y=1.015)
-    
-    # Update variable evolution plots
-    for var_name, art in artists["var_artists"].items():
-        update_parameter_evolution(current_step, art)
-    
-    # Update metrics
-    if artists["metrics_artists"]:
-        update_metrics(current_step, artists["metrics_artists"])
-    
-    # Update field plots
-    get_snapshot_fn = artists["get_snapshot_fn"]
-    snapshot = get_snapshot_fn(frame_idx)
-    
-    for art in artists["field_artists"]:
-        fname = art["name"]
-        if fname not in snapshot:
-            continue
-        data_list = snapshot[fname]
-        
-        # Update prediction
-        art["im_pred"].set_array(data_list[1].ravel())
-        
-        # Update error
-        if art["im_err"] is not None:
-            art["im_err"].set_array(data_list[2].ravel())
-            lim = np.nanmax(np.abs(data_list[2]))
-            if lim > 0:
-                art["im_err"].set_clim(-lim, lim)
-    
-    return []
 
 def plot_results(results, iteration=-1, **opts):
-    """
-    Plot results with configurable layout.
-    
-    Options (pass as kwargs or in opts dict):
-        fields: list of field names to plot, e.g. ["Ux", "Uy"]. None = all.
-        show_metrics: bool, whether to show metrics column (default True).
-        show_residual: bool, whether to show residual row (default True).
-        dpi: figure dpi (default 100).
-        metrics: optional list of metric names to draw in the metrics subplot.
-    
-    Returns:
-        fig: matplotlib figure
-        artists: dict of artists for animation (use with animate())
-    """
-    fig, artists = init_plot(results, iteration=iteration, **opts)
-    return fig, artists
-
-def animate(fig, artists, output_file, fps=10, frame_indices=None, preview=False):
-    """
-    Create animation from a figure and its artists.
-    
-    Args:
-        fig: matplotlib figure (from plot_results or init_plot)
-        artists: dict of artists (from plot_results or init_plot)
-        output_file: path to save the video
-        fps: frames per second
-        frame_indices: list of frame indices to animate. If None, use all frames.
-                      Use subsample_frames() to create custom frame sequences.
-        preview: if True, print video duration and return without saving
-    
-    Returns:
-        anim: FuncAnimation object (only if preview=False)
-        
-    Example:
-        >>> fig, artists = plot_results(results)
-        >>> # Preview duration with subsampling
-        >>> frames = subsample_frames(len(artists["steps"]), [1, 2, 4])
-        >>> animate(fig, artists, "out.mp4", frame_indices=frames, preview=True)
-        >>> # Create actual video
-        >>> animate(fig, artists, "out.mp4", frame_indices=frames)
-    """
-    import matplotlib.animation as animation
-    
-    steps = artists["steps"]
-    n_total = len(steps)
-    
-    if frame_indices is None:
-        frame_indices = list(range(n_total))
-    
-    n_frames = len(frame_indices)
-    duration = n_frames / fps
-    
-    if preview:
-        print(f"Animation preview:")
-        print(f"  Total available frames: {n_total}")
-        print(f"  Selected frames: {n_frames}")
-        print(f"  FPS: {fps}")
-        print(f"  Duration: {duration:.1f}s")
-        return None
-    
-    def update(frame_idx):
-        return update_frame(frame_idx, fig, artists)
-    
-    anim = animation.FuncAnimation(
-        fig, update, frames=frame_indices, 
-        interval=1000/fps, repeat=False
-    )
-    anim.save(output_file, writer='ffmpeg', fps=fps)
-    plt.close(fig)
-    
-    print(f"Animation saved to {output_file} ({n_frames} frames, {duration:.1f}s)")
-    return anim
+    """Plot analytical plate results. See cm.plot_util.plot_results for details."""
+    return _plot_results(results, exact_solution, iteration=iteration, **opts)
 
 
 if __name__ == "__main__":
@@ -1058,3 +767,4 @@ if __name__ == "__main__":
         wandb.finish()
     else:
         train()
+
