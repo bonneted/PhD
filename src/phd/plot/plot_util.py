@@ -11,7 +11,7 @@ import matplotlib.ticker as ticker
 import matplotlib.transforms as mtransforms
 import matplotlib.colors as colors
 import matplotlib.animation as animation
-from phd.config import get_current_config, KUL_CYCLE
+from phd.plot.config import get_current_config, KUL_CYCLE
 
 
 def make_formatter():

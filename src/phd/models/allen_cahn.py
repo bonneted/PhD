@@ -12,7 +12,7 @@ import os
 
 # Import dataset path helper
 from phd.data import get_dataset_path
-from phd.config import get_current_config
+from phd.plot import get_current_config
 
 
 DEFAULT_CONFIG = {
@@ -491,11 +491,3 @@ if __name__ == "__main__":
     else:
         # Running standalone
         results = train()
-
-
-# Backward compatibility aliases
-test_data_allen_cahn = test_data
-pde_allen_cahn = pde
-eval_allen_cahn = eval
-plot_allen_cahn_results = plot_results
-train_allen_cahn = train

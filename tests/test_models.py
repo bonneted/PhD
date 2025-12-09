@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 sys.path.append(str(Path(__file__).parent.parent / "src"))
 
 from phd.models.cm.analytical_plate import train
-from phd.models.cm.plot_util import load_run_data, create_animation
+from phd.plot.plot_cm import compute_metrics_from_history, animate
 
 class TestModels(unittest.TestCase):
     def setUp(self):

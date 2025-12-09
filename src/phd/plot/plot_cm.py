@@ -1,17 +1,17 @@
 """
-plot_util.py
-------------
+plot_cm.py
+----------
 Plotting utilities specific to continuum mechanics (CM) problems.
-Builds on top of the general plotting utilities in phd.utils.plot_util.
+Builds on top of the general plotting utilities in phd.plot.plot_util.
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from phd.config import get_current_config
+from phd.plot.config import get_current_config, KUL_CYCLE
 
 # Re-export general plotting functions for convenient import
-from phd.utils.plot_util import (
+from phd.plot.plot_util import (
     make_formatter,
     init_metrics,
     update_metrics,
@@ -488,7 +488,6 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
     ax_metrics.set_box_aspect(1)
     
     # Plot both metrics on same axis with different colors
-    from phd.config import KUL_CYCLE
     colors = KUL_CYCLE[:2]
     
     metrics_artists = {}

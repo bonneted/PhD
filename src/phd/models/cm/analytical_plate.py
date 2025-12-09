@@ -4,14 +4,12 @@ import jax
 import jax.numpy as jnp
 import time
 from pathlib import Path
-from phd.models.cm.utils import (
-    transform_coords, linear_elasticity_pde, VariableValue, VariableArray
-)
+from phd.models.cm.utils import transform_coords, linear_elasticity_pde
+from phd.utils import VariableValue, VariableArray
 from phd.utils import ResultsManager, save_run_data as _save_run_data, continue_training
 from phd.utils.save_util import load_run as _load_run
-from phd.config import get_current_config
-# Import plotting functions from cm/plot_util (which re-exports general utils)
-from phd.models.cm.plot_util import (
+from phd.plot import get_current_config
+from phd.plot.plot_cm import (
     init_figure, init_metrics, update_metrics, 
     init_parameter_evolution, update_parameter_evolution, 
     plot_field, add_colorbar, subsample_frames,
@@ -517,16 +515,16 @@ def load_run(run_dir, restore_model=False):
 
 
 # =============================================================================
-# Plotting wrappers - delegate to cm/plot_util with problem-specific exact_solution
+# Plotting wrappers - delegate to phd.plot.plot_cm with problem-specific exact_solution
 # =============================================================================
 
 def init_plot(results, iteration=-1, **opts):
-    """Initialize plot for analytical plate results. See cm.plot_util.init_plot for details."""
+    """Initialize plot for analytical plate results. See phd.plot.plot_cm.init_plot for details."""
     return _init_plot(results, exact_solution, iteration=iteration, **opts)
 
 
 def plot_results(results, iteration=-1, **opts):
-    """Plot analytical plate results. See cm.plot_util.plot_results for details."""
+    """Plot analytical plate results. See phd.plot.plot_cm.plot_results for details."""
     return _plot_results(results, exact_solution, iteration=iteration, **opts)
 
 
