@@ -11,7 +11,7 @@ from matplotlib import ticker
 import os
 
 # Import dataset path helper
-from phd.data import get_dataset_path
+from phd.io import get_dataset_path
 from phd.plot import get_current_config
 
 

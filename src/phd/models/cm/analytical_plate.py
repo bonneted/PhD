@@ -5,9 +5,9 @@ import jax.numpy as jnp
 import time
 from pathlib import Path
 from phd.models.cm.utils import transform_coords, linear_elasticity_pde
-from phd.utils import VariableValue, VariableArray
-from phd.utils import ResultsManager, save_run_data as _save_run_data, continue_training
-from phd.utils.save_util import load_run as _load_run
+from phd.io import VariableValue, VariableArray
+from phd.io import ResultsManager, save_run_data as _save_run_data, continue_training
+from phd.io import load_run as _load_run
 from phd.plot import get_current_config
 from phd.plot.plot_cm import (
     init_figure, init_metrics, update_metrics, 
@@ -492,11 +492,11 @@ def train(config=None):
 
 
 # =============================================================================
-# Save/Load wrappers - delegate to phd.utils.save_util with problem-specific functions
+# Save/Load wrappers - delegate to phd.io with problem-specific functions
 # =============================================================================
 
 def save_run_data(results, results_manager=None):
-    """Save run data to disk. See phd.utils.save_util.save_run_data for details."""
+    """Save run data to disk. See phd.io.save_run_data for details."""
     return _save_run_data(results, results_manager)
 
 
