@@ -1,0 +1,52 @@
+{
+    "task": "inverse",
+    "net_type": "SPINN",
+    "mlp_type": "mlp",
+    "activations": "tanh",
+    "initialization": "Glorot uniform",
+    "n_hidden": 3,
+    "rank": 32,
+    "width": 40,
+    "depth": 5,
+    "num_domain": 4096,
+    "lr": 0.001,
+    "lr_decay": [
+        "warmup cosine",
+        1e-05,
+        0.001,
+        1000,
+        75000,
+        1e-05
+    ],
+    "n_iter": 75000,
+    "seed": 0,
+    "lmbd": 1.0,
+    "mu": 0.5,
+    "Q": 4.0,
+    "bc_type": "hard",
+    "noise_ratio": 0.0,
+    "n_DIC": 10,
+    "lmbd_init": 2.0,
+    "mu_init": 0.3,
+    "variables_training_factors": [
+        1.0,
+        1.0
+    ],
+    "normalize_parameters": true,
+    "SA": false,
+    "SA_init": "constant",
+    "SA_update_factor": -1.0,
+    "SA_share_weights": true,
+    "available_time": null,
+    "log_every": 250,
+    "results_dir": "analytical_plate_results",
+    "generate_video": false,
+    "log_fields": [
+        "Ux",
+        "Uy",
+        "Sxx",
+        "Syy",
+        "Sxy"
+    ],
+    "save_on_disk": false
+}

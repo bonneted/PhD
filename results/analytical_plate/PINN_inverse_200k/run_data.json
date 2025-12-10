@@ -1,0 +1,71 @@
+{
+  "config": {
+    "task": "inverse",
+    "net_type": "PINN",
+    "mlp_type": "mlp",
+    "activations": "tanh",
+    "initialization": "Glorot uniform",
+    "n_hidden": 3,
+    "width": 40,
+    "rank": 32,
+    "num_domain": 4096,
+    "lr": 0.001,
+    "lr_decay": [
+      "warmup cosine",
+      1e-05,
+      0.001,
+      1000,
+      200000,
+      1e-05
+    ],
+    "n_iter": 200000,
+    "seed": 0,
+    "lmbd": 1.0,
+    "mu": 0.5,
+    "Q": 4.0,
+    "bc_type": "hard",
+    "noise_ratio": 0.0,
+    "n_DIC": 10,
+    "lmbd_init": 2.0,
+    "mu_init": 0.3,
+    "variables_training_factors": [
+      1.0,
+      1.0
+    ],
+    "normalize_parameters": true,
+    "SA": false,
+    "SA_init": "constant",
+    "SA_update_factor": -1.0,
+    "SA_share_weights": true,
+    "available_time": null,
+    "log_every": 500,
+    "results_dir": "analytical_plate_results",
+    "generate_video": false,
+    "log_fields": [
+      "Ux",
+      "Uy",
+      "Sxx",
+      "Syy",
+      "Sxy"
+    ],
+    "save_on_disk": false,
+    "restored_params": null,
+    "restored_external_vars": null
+  },
+  "run_metrics": {
+    "elapsed_time": 706.7365870475769,
+    "iterations_per_sec": 282.9908676944387,
+    "run_dir": "analytical_plate_results/PINN_inverse_200k"
+  },
+  "evaluation": {
+    "l2_error": 0.27691097408118875,
+    "field_l2_errors": {
+      "Ux": 0.07412403993697751,
+      "Uy": 0.32343240446645655,
+      "Sxx": 0.1089551974776741,
+      "Syy": 0.4711576566447989,
+      "Sxy": 0.8651794311297618
+    },
+    "ngrid": 100
+  }
+}
