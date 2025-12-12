@@ -10,13 +10,73 @@ API:
     load_run(run_name, problem, base_dir=None, restore_model=False, train_fn=None)
     save_field(fields_dir, step, fields_dict)
     load_fields(fields_dir)
+    create_interpolation_fn(x_grid, y_grid, data_array, transform_fn=None)
 """
 
 import json
 import time
 import numpy as np
 from pathlib import Path
+from scipy.interpolate import RegularGridInterpolator
 import deepxde as dde
+
+
+# =============================================================================
+# Interpolation utilities for exact solutions from data
+# =============================================================================
+
+def create_interpolation_fn(x_grid, y_grid, data_array, transform_fn=None):
+    """
+    Create an interpolation function for field data on a regular grid.
+    
+    Args:
+        x_grid: 1D array of x coordinates (first axis)
+        y_grid: 1D array of y coordinates (second axis)  
+        data_array: 2D array of shape (len(x_grid), len(y_grid)) or 
+                    3D array of shape (len(x_grid), len(y_grid), n_components)
+        transform_fn: Optional function to transform input coordinates.
+                      Should take x and return transformed coordinates.
+                      For SPINN inputs (list of arrays), use this to convert to 2D array.
+    
+    Returns:
+        Function that interpolates data at given coordinates.
+        Input: x array of shape (N, 2) or list [x_coords, y_coords] for SPINN
+        Output: array of shape (N,) or (N, n_components)
+    """
+    # Ensure data is at least 3D for consistent handling
+    if data_array.ndim == 2:
+        data_array = data_array[:, :, np.newaxis]
+    
+    n_components = data_array.shape[2]
+    interpolators = []
+    
+    for i in range(n_components):
+        interp = RegularGridInterpolator(
+            (x_grid, y_grid),
+            data_array[:, :, i],
+            method='linear',
+            bounds_error=False,
+            fill_value=None
+        )
+        interpolators.append(interp)
+    
+    def interpolation_fn(x):
+        # Handle SPINN list input
+        if isinstance(x, (list, tuple)):
+            if transform_fn is not None:
+                x_in = transform_fn(x)
+            else:
+                # Default: create meshgrid from list inputs
+                x0, x1 = np.atleast_1d(x[0].squeeze()), np.atleast_1d(x[1].squeeze())
+                xx, yy = np.meshgrid(x0, x1, indexing='ij')
+                x_in = np.stack([xx.ravel(), yy.ravel()], axis=-1)
+        else:
+            x_in = x
+            
+        results = np.array([interp((x_in[:, 0], x_in[:, 1])) for interp in interpolators]).T
+        return results.squeeze() if n_components == 1 else results
+    
+    return interpolation_fn
 
 
 # =============================================================================

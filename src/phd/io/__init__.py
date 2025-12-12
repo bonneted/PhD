@@ -6,6 +6,7 @@ API:
     load_run(run_name, problem, base_dir=None, restore_model=False, train_fn=None)
     save_field(fields_dir, step, fields_dict)
     load_fields(fields_dir)
+    create_interpolation_fn(x_grid, y_grid, data_array, transform_fn=None)
 """
 
 from .utils import (
@@ -19,6 +20,7 @@ from .utils import (
     save_field,
     load_fields,
     load_field,
+    create_interpolation_fn,
 )
 
 from .wandb_utils import (
@@ -44,6 +46,7 @@ __all__ = [
     "save_field",
     "load_fields",
     "load_field",
+    "create_interpolation_fn",
     # Wandb utilities
     "get_sweep_dir",
     "setup_wandb_environment",
