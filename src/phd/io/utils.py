@@ -4,15 +4,110 @@ utils.py
 Utilities for saving and loading training results and datasets.
 Provides a clean, modular interface for persisting experiment data.
 Also contains callbacks for logging during training.
+
+API:
+    save_run_data(results, run_name=None, problem=None, base_dir=None)
+    load_run(run_name, problem, base_dir=None, restore_model=False, train_fn=None)
+    save_field(fields_dir, step, fields_dict)
+    load_fields(fields_dir)
 """
 
-import os
 import json
 import time
-import time as time_module
 import numpy as np
 from pathlib import Path
 import deepxde as dde
+
+
+# =============================================================================
+# Field Utilities - Generic save/load for field snapshots
+# =============================================================================
+
+def save_field(fields_dir, step, fields_dict):
+    """
+    Save a single field snapshot to disk.
+    
+    Args:
+        fields_dir: Path to the fields directory
+        step: Iteration/step number
+        fields_dict: Dict mapping field names to numpy arrays
+                     e.g., {"u_pred": array, "pde_loss": array, "pde_weights": array}
+    
+    Example:
+        save_field("results/allen_cahn/run1/fields", 1000, {"u_pred": u, "pde_loss": f})
+    """
+    fields_dir = Path(fields_dir)
+    fields_dir.mkdir(exist_ok=True, parents=True)
+    
+    # Save the field data
+    np.savez_compressed(fields_dir / f"fields_{step}.npz", **fields_dict)
+    
+    # Update steps index (append if exists)
+    steps_file = fields_dir / "steps.txt"
+    if steps_file.exists():
+        existing_steps = np.loadtxt(steps_file, dtype=int, ndmin=1).tolist()
+        if step not in existing_steps:
+            existing_steps.append(step)
+            np.savetxt(steps_file, np.array(sorted(existing_steps), dtype=int), fmt="%d")
+    else:
+        np.savetxt(steps_file, np.array([step], dtype=int), fmt="%d")
+
+
+def load_fields(fields_dir):
+    """
+    Load all field snapshots from a directory.
+    
+    Args:
+        fields_dir: Path to the fields directory
+        
+    Returns:
+        dict mapping step -> {field_name: array}, or None if no fields exist
+        
+    Example:
+        fields = load_fields("results/allen_cahn/run1/fields")
+        for step, data in fields.items():
+            print(f"Step {step}: u_pred shape = {data['u_pred'].shape}")
+    """
+    fields_dir = Path(fields_dir)
+    
+    if not fields_dir.exists():
+        return None
+    
+    steps_file = fields_dir / "steps.txt"
+    if not steps_file.exists():
+        return None
+    
+    steps = np.loadtxt(steps_file, dtype=int, ndmin=1)
+    
+    fields = {}
+    for step in steps:
+        npz_file = fields_dir / f"fields_{step}.npz"
+        if npz_file.exists():
+            with np.load(npz_file) as f:
+                fields[int(step)] = {k: f[k] for k in f.keys()}
+    
+    return fields if fields else None
+
+
+def load_field(fields_dir, step):
+    """
+    Load a single field snapshot.
+    
+    Args:
+        fields_dir: Path to the fields directory
+        step: Iteration/step number to load
+        
+    Returns:
+        dict mapping field_name -> array, or None if not found
+    """
+    fields_dir = Path(fields_dir)
+    npz_file = fields_dir / f"fields_{step}.npz"
+    
+    if not npz_file.exists():
+        return None
+    
+    with np.load(npz_file) as f:
+        return {k: f[k] for k in f.keys()}
 
 
 # =============================================================================
@@ -46,9 +141,10 @@ class FieldSaver(dde.callbacks.Callback):
 
     def on_epoch_end(self):
         if self.model.train_state.epoch % self.period == 0:
-            self.save_fields(self.model.train_state.epoch)
+            self._record(self.model.train_state.epoch)
 
-    def save_fields(self, step):
+    def _record(self, step):
+        """Record and optionally save fields at given step."""
         y_pred = self.model.predict(self.x_eval)
         
         # y_pred shape: (N, n_fields)
@@ -62,12 +158,9 @@ class FieldSaver(dde.callbacks.Callback):
         self.history.append((step, data_dict))
         self.steps.append(step)
         
-        # Save to disk if requested
+        # Save to disk if requested using generic save_field
         if self.save_to_disk and self.results_manager:
-            filename = self.fields_dir / f"fields_{step}.npz"
-            np.savez_compressed(filename, **data_dict)
-            # Update steps index
-            np.savetxt(self.fields_dir / "steps.txt", np.array(self.steps), fmt="%d")
+            save_field(self.fields_dir, step, data_dict)
 
 
 class VariableValue(dde.callbacks.Callback):
@@ -265,33 +358,37 @@ class VariableArray(dde.callbacks.Callback):
 
 
 # =============================================================================
-# Results Manager
+# Results Manager (internal use)
 # =============================================================================
 
+def _generate_experiment_name():
+    """Generate a unique experiment name: timestamp_shorthash."""
+    import hashlib
+    timestamp = int(time.time())
+    short_hash = hashlib.md5(str(timestamp).encode()).hexdigest()[:6]
+    return f"{timestamp}_{short_hash}"
+
+
+def _get_default_base_dir():
+    """Get default results base directory (project_root/results)."""
+    current_path = Path(__file__).resolve()
+    project_root = current_path.parent.parent.parent.parent
+    if not (project_root / "pyproject.toml").exists() and not (project_root / ".git").exists():
+        project_root = Path.cwd()
+    return project_root / "results"
+
+
 class ResultsManager:
-    """Manages paths and basic I/O for a training run directory."""
+    """Internal class for managing paths. Used by save/load functions.
     
-    def __init__(self, run_name=None, base_dir=None):
-        """
-        Initialize the ResultsManager.
-        
-        Args:
-            run_name: Specific name for the run. If None, generated from timestamp.
-            base_dir: Base directory for results. Defaults to 'results' in project root.
-        """
-        if base_dir is None:
-            current_path = Path(__file__).resolve()
-            project_root = current_path.parent.parent.parent.parent
-            if not (project_root / "pyproject.toml").exists() and not (project_root / ".git").exists():
-                project_root = Path.cwd()
-            self.base_dir = project_root / "results"
-        else:
-            self.base_dir = Path(base_dir)
-            
-        if run_name is None:
-            run_name = f"run_{int(time.time())}"
-            
-        self.run_dir = self.base_dir / run_name
+    Directory structure: {base_dir}/{problem}/{run_name}/
+    """
+    
+    def __init__(self, problem, run_name, base_dir=None):
+        self.base_dir = Path(base_dir) if base_dir else _get_default_base_dir()
+        self.problem = problem
+        self.run_name = run_name
+        self.run_dir = self.base_dir / self.problem / self.run_name
         
     def ensure_dir(self):
         """Create the run directory if it doesn't exist."""
@@ -302,11 +399,30 @@ class ResultsManager:
         return self.run_dir / filename
 
 
+def _extract_problem_and_run_name(results):
+    """Extract problem name and run_name from results config."""
+    config = results.get("config", {})
+    
+    # Extract problem name
+    if isinstance(config.get("problem"), dict):
+        problem = config["problem"].get("name")
+    else:
+        problem = config.get("problem_name") or config.get("problem")
+    
+    # Extract run_name from results.experiment_name or generate one
+    if isinstance(config.get("results"), dict):
+        run_name = config["results"].get("experiment_name")
+    else:
+        run_name = config.get("experiment_name") or config.get("run_name")
+    
+    return problem, run_name
+
+
 # =============================================================================
 # Saving Functions
 # =============================================================================
 
-def save_run_data(results, results_manager=None):
+def save_run_data(results, run_name=None, problem=None, base_dir=None):
     """
     Save all run data to disk.
     
@@ -320,23 +436,45 @@ def save_run_data(results, results_manager=None):
     
     Args:
         results: Dictionary returned by train()
-        results_manager: ResultsManager instance. If None, creates from run_dir.
-    """
-    if results_manager is None:
-        run_dir = Path(results["run_dir"])
-        results_manager = ResultsManager(run_name=run_dir.name, base_dir=run_dir.parent)
+        run_name: Name for this run (subfolder name). If None, extracted from 
+                  results["config"]["results"]["experiment_name"] or auto-generated.
+        problem: Problem name (e.g., "allen_cahn"). If None, extracted from
+                 results["config"]["problem"]["name"].
+        base_dir: Base directory for results. Defaults to project_root/results.
     
-    results_manager.ensure_dir()
+    Example:
+        # Simple: auto-extract names from config
+        save_run_data(results)
+        
+        # Override run_name
+        save_run_data(results, run_name="my_experiment")
+        
+        # Full control
+        save_run_data(results, run_name="baseline", problem="allen_cahn", 
+                      base_dir="./my_results")
+    """
+    # Extract defaults from config if not provided
+    config_problem, config_run_name = _extract_problem_and_run_name(results)
+    
+    problem = problem or config_problem or "default"
+    run_name = run_name or config_run_name or _generate_experiment_name()
+    
+    rm = ResultsManager(problem=problem, run_name=run_name, base_dir=base_dir)
+    rm.ensure_dir()
+    
+    # Update run_dir in results
+    results["run_dir"] = str(rm.run_dir)
     
     # Save each component
-    _save_run_metadata(results, results_manager)
-    _save_loss_history(results, results_manager)
-    _save_model_params(results, results_manager)
-    _save_variable_history(results, results_manager)
-    _save_variable_arrays(results, results_manager)
-    _save_field_snapshots(results, results_manager)
+    _save_run_metadata(results, rm)
+    _save_loss_history(results, rm)
+    _save_model_params(results, rm)
+    _save_variable_history(results, rm)
+    _save_variable_arrays(results, rm)
+    _save_field_snapshots(results, rm)
     
-    print("Data saved successfully.")
+    print(f"Data saved to {rm.run_dir}")
+    return rm.run_dir
 
 
 def _save_run_metadata(results, rm):
@@ -453,21 +591,30 @@ def _save_field_snapshots(results, rm):
 # Loading Functions
 # =============================================================================
 
-def load_run(run_dir, restore_model=False, train_fn=None, eval_fn=None):
+def load_run(run_name, problem, base_dir=None, restore_model=False, train_fn=None, eval_fn=None):
     """
     Load a saved run from disk.
     
     Args:
-        run_dir: Path to the run directory
+        run_name: Name of the run (subfolder name, e.g., "SPINN_forward")
+        problem: Problem name (e.g., "allen_cahn", "analytical_plate")
+        base_dir: Base directory for results. Defaults to project_root/results.
         restore_model: If True, reconstruct the model using saved parameters
         train_fn: Training function (required if restore_model=True)
         eval_fn: Evaluation function (required if restore_model=True)
     
     Returns:
         dict matching train() output structure
+        
+    Example:
+        results = load_run("SPINN_forward", "analytical_plate")
+        results = load_run("baseline", "allen_cahn", base_dir="./my_results")
     """
-    run_dir = Path(run_dir)
-    rm = ResultsManager(base_dir=run_dir.parent, run_name=run_dir.name)
+    rm = ResultsManager(problem=problem, run_name=run_name, base_dir=base_dir)
+    run_dir = rm.run_dir
+    
+    if not run_dir.exists():
+        raise FileNotFoundError(f"Run directory not found: {run_dir}")
     
     # Load all components
     config, run_metrics, evaluation = _load_run_metadata(run_dir, rm)
@@ -479,7 +626,7 @@ def load_run(run_dir, restore_model=False, train_fn=None, eval_fn=None):
     result = {
         "config": config,
         "losshistory": losshistory,
-        "run_dir": run_metrics.get("run_dir", str(run_dir)),
+        "run_dir": str(run_dir),
         "elapsed_time": run_metrics.get("elapsed_time"),
         "iterations_per_sec": run_metrics.get("iterations_per_sec"),
         "evaluation": evaluation,

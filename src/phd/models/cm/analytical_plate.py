@@ -4,10 +4,13 @@ import jax
 import jax.numpy as jnp
 import time
 from pathlib import Path
+from typing import Optional
+from omegaconf import DictConfig, OmegaConf
 from phd.models.cm.utils import transform_coords, linear_elasticity_pde
-from phd.io import VariableValue, VariableArray
-from phd.io import ResultsManager, save_run_data as _save_run_data, continue_training
+from phd.io import VariableValue, VariableArray, continue_training
+from phd.io import save_run_data as _save_run_data
 from phd.io import load_run as _load_run
+from phd.io.utils import ResultsManager  # Internal use only
 from phd.plot import get_current_config
 from phd.plot.plot_cm import (
     init_figure, init_metrics, update_metrics, 
@@ -20,53 +23,7 @@ from phd.plot.plot_cm import (
     plot_compare,
     LATEX_FIELD_NAMES,
 )
-
-DEFAULT_CONFIG = {
-    "task": "forward", # "forward" or "inverse"
-    "net_type": "SPINN",
-    "mlp_type": "mlp",
-    "activations": "tanh",
-    "initialization": "Glorot uniform",
-    "n_hidden": 3,
-    "width": 40, 
-    "rank": 32, # for SPINN
-    "num_domain": 64**2,
-    "lr": 1e-3,
-    "lr_decay": None, # e.g. ["exponential", 1e-3, 2000, 0.9] or ["warmup cosine", 1e-5, 1e-3, 1000, 100000, 1e-5]
-    "n_iter": 10000,
-    "seed": 0,
-    "lmbd": 1.0,
-    "mu": 0.5,
-    "Q": 4.0,
-    "bc_type": "hard", # "hard" or "soft"
-    # Inverse specific
-    "noise_ratio": 0.0,
-    "n_DIC": 10, # n_DIC^2 points
-    "lmbd_init": 2.0,
-    "mu_init": 0.3,
-    "variables_training_factors": [1.0, 1.0], # Scale trainable variables to improve training
-    "normalize_parameters": True, # Whether to normalize parameters during training
-    # Self-Attention (SA) for adaptive PDE loss weighting
-    "SA": False,  # Enable Self-Attention
-    "SA_init": "constant",  # "constant", "uniform", or "normal"
-    "SA_update_factor": -1.0,  # Update factor for SA weights (-1 for gradient descent)
-    "SA_share_weights": True,  # Share weights between PDE (momentum) and material (constitutive) losses
-    # Logging
-    "available_time": None, # in minutes
-    "log_every": 100,
-    "results_dir": "results_analytical_plate",
-    "generate_video": False,
-    "log_fields": ["Ux", "Uy", "Sxx", "Syy", "Sxy"], # Fields to log during training
-    "save_on_disk": False,
-    # Model restoration
-    "restored_params": None,  # Network parameters to restore (from saved model)
-    "restored_external_vars": None,  # External trainable variables to restore (SA weights, material params)
-}
-
-
-class Config:
-    def __init__(self, **entries):
-        self.__dict__.update(entries)
+from phd.config import load_config
 
 def exact_solution(x, lmbd, mu, Q, net_type="SPINN"):
     if net_type == "SPINN" and isinstance(x, (list,tuple)):
@@ -141,25 +98,23 @@ def HardBC(x, f, lmbd, mu, Q, net_type="SPINN"):
     Sxy = f[:, 4]
     return dde.backend.stack((Ux, Uy, Sxx, Syy, Sxy), axis=1)
 
-def eval(config, model, ngrid=100):
+def eval(cfg: DictConfig, model, ngrid: int = 100):
     """
     Evaluate trained model on test data.
     
     Args:
-        config: Configuration dict or Config object
+        cfg: DictConfig with problem configuration
         model: Trained DeepXDE model
         ngrid: Grid resolution for evaluation
     
     Returns:
         dict with prediction fields, errors, and metrics
     """
-    if not isinstance(config, dict):
-        config = config.__dict__ if hasattr(config, '__dict__') else dict(config)
-    
-    lmbd = config.get("lmbd", 1.0)
-    mu = config.get("mu", 0.5)
-    Q = config.get("Q", 4.0)
-    net_type = config.get("net_type", "SPINN")
+    # Extract material parameters from DictConfig
+    lmbd = cfg.problem.material.lmbd
+    mu = cfg.problem.material.mu
+    Q = cfg.problem.material.Q
+    net_type = cfg.model.net_type
     
     # Create evaluation grid
     x_lin = np.linspace(0, 1, ngrid)
@@ -208,23 +163,67 @@ def eval(config, model, ngrid=100):
     }
 
 
-def train(config=None):
-    cfg = DEFAULT_CONFIG.copy()
-    if config is not None:
-        cfg.update(config)
-    cfg = Config(**cfg)
+def train(cfg: DictConfig = None, overrides: Optional[list] = None):
+    """Train analytical plate model.
     
-    dde.config.set_random_seed(cfg.seed)
-    if cfg.net_type == "SPINN":
+    Args:
+        cfg: Hydra DictConfig. If None, loads default config for analytical_plate.
+             Load with: cfg = load_config("analytical_plate")
+             Override with: cfg = load_config("analytical_plate", overrides=["training.n_iter=5000"])
+        overrides: List of Hydra overrides if cfg is None
+    
+    Returns:
+        dict with model, losshistory, config, evaluation, etc.
+    """
+    if cfg is None:
+        cfg = load_config("analytical_plate", overrides=overrides)
+    
+    # Extract commonly used config values for readability
+    task = cfg.task.type  # "forward" or "inverse"
+    net_type = cfg.model.net_type
+    seed = cfg.seed
+    
+    # Material parameters (true values)
+    lmbd = cfg.problem.material.lmbd
+    mu = cfg.problem.material.mu
+    Q = cfg.problem.material.Q
+    
+    # Architecture (from model config)
+    n_hidden = cfg.model.architecture.n_hidden
+    width = cfg.model.architecture.width
+    rank = cfg.model.architecture.rank
+    activations = cfg.model.architecture.activations
+    initialization = cfg.model.architecture.initialization
+    
+    # Training
+    n_iter = cfg.training.n_iter
+    lr = cfg.training.lr
+    lr_decay = OmegaConf.to_object(cfg.training.lr_decay) if cfg.training.lr_decay else None
+    num_domain = cfg.training.num_domain
+    bc_type = cfg.training.bc_type
+    log_every = cfg.training.log_every
+    
+    # Self-attention
+    sa_enabled = cfg.training.self_attention.enabled
+    sa_init = cfg.training.self_attention.init
+    sa_update_factor = cfg.training.self_attention.update_factor
+    sa_share_weights = cfg.training.self_attention.share_weights
+    
+    # Results
+    save_on_disk = cfg.results.save_on_disk
+    generate_video = cfg.training.generate_video
+    
+    # Model restoration (optional, passed via runtime override)
+    restored_params = OmegaConf.select(cfg, "runtime.restored_params", default=None)
+    restored_external_vars = OmegaConf.select(cfg, "runtime.restored_external_vars", default=None)
+    available_time = OmegaConf.select(cfg, "runtime.available_time", default=None)
+    
+    dde.config.set_random_seed(seed)
+    if net_type == "SPINN":
         dde.config.set_default_autodiff("forward")
     
     # Geometry
     geom = dde.geometry.Rectangle([0, 0], [1, 1])
-    
-    # Parameters (true values, used for body forces and reference)
-    lmbd = cfg.lmbd
-    mu = cfg.mu
-    Q = cfg.Q
     
     # =========================================================================
     # Build external_trainable_variables list
@@ -239,26 +238,26 @@ def train(config=None):
     # --- Self-Attention weights ---
     # SA weights come FIRST in external_trainable_variables
     n_sa_vars = 0  # Track how many SA variables we add
-    if cfg.SA:
-        key = jax.random.PRNGKey(cfg.seed)
-        if cfg.SA_init == "constant":
-            pde_weight_init = jnp.ones((cfg.num_domain, 1))
-            mat_weight_init = jnp.ones((cfg.num_domain, 1))
-        elif cfg.SA_init == "uniform":
-            pde_weight_init = jax.random.uniform(key, (cfg.num_domain, 1)) * 10
-            mat_weight_init = jax.random.uniform(jax.random.split(key)[0], (cfg.num_domain, 1)) * 10
-        elif cfg.SA_init == "normal":
-            pde_weight_init = jax.random.normal(key, (cfg.num_domain, 1)) * 10 + 10
-            mat_weight_init = jax.random.normal(jax.random.split(key)[0], (cfg.num_domain, 1)) * 10 + 10
+    if sa_enabled:
+        key = jax.random.PRNGKey(seed)
+        if sa_init == "constant":
+            pde_weight_init = jnp.ones((num_domain, 1))
+            mat_weight_init = jnp.ones((num_domain, 1))
+        elif sa_init == "uniform":
+            pde_weight_init = jax.random.uniform(key, (num_domain, 1)) * 10
+            mat_weight_init = jax.random.uniform(jax.random.split(key)[0], (num_domain, 1)) * 10
+        elif sa_init == "normal":
+            pde_weight_init = jax.random.normal(key, (num_domain, 1)) * 10 + 10
+            mat_weight_init = jax.random.normal(jax.random.split(key)[0], (num_domain, 1)) * 10 + 10
         else:
-            raise ValueError(f"Invalid SA_init: {cfg.SA_init}. Use 'constant', 'uniform', or 'normal'.")
+            raise ValueError(f"Invalid sa_init: {sa_init}. Use 'constant', 'uniform', or 'normal'.")
         
-        sa_pde_weight = dde.Variable(pde_weight_init, update_factor=cfg.SA_update_factor)
+        sa_pde_weight = dde.Variable(pde_weight_init, update_factor=sa_update_factor)
         external_trainable_variables.append(sa_pde_weight)
         n_sa_vars = 1
         
-        if not cfg.SA_share_weights:
-            sa_mat_weight = dde.Variable(mat_weight_init, update_factor=cfg.SA_update_factor)
+        if not sa_share_weights:
+            sa_mat_weight = dde.Variable(mat_weight_init, update_factor=sa_update_factor)
             external_trainable_variables.append(sa_mat_weight)
             n_sa_vars = 2
     
@@ -266,21 +265,26 @@ def train(config=None):
     # Material variables come AFTER SA weights in external_trainable_variables
     lmbd_trainable = None
     mu_trainable = None
-    if cfg.task == "inverse":
-        variables_training_factor = list(cfg.variables_training_factors)  # Make a copy
-        if cfg.normalize_parameters:
-            variables_training_factor[0] *= cfg.lmbd_init
-            variables_training_factor[1] *= cfg.mu_init
+    if task == "inverse":
+        # Get inverse-specific config (from task config)
+        inv = cfg.task.inverse
+        lmbd_init = inv.init_guess.lmbd
+        mu_init = inv.init_guess.mu
+        variables_training_factor = [inv.training_factors.lmbd, inv.training_factors.mu]
+        
+        if inv.normalize_parameters:
+            variables_training_factor[0] *= lmbd_init
+            variables_training_factor[1] *= mu_init
 
-        lmbd_trainable = dde.Variable(cfg.lmbd_init / variables_training_factor[0])
-        mu_trainable = dde.Variable(cfg.mu_init / variables_training_factor[1])
+        lmbd_trainable = dde.Variable(lmbd_init / variables_training_factor[0])
+        mu_trainable = dde.Variable(mu_init / variables_training_factor[1])
         external_trainable_variables.append(lmbd_trainable)
         external_trainable_variables.append(mu_trainable)
     
     # --- Restore external trainable variables from saved state ---
-    if cfg.restored_external_vars is not None:
+    if restored_external_vars is not None:
         print("Restoring external trainable variables...")
-        for i, (var, val) in enumerate(zip(external_trainable_variables, cfg.restored_external_vars.values())):
+        for i, (var, val) in enumerate(zip(external_trainable_variables, restored_external_vars.values())):
             var.value = val
             print(f"  Restored var_{i}: shape={val.shape if hasattr(val, 'shape') else 'scalar'}")
     
@@ -293,7 +297,7 @@ def train(config=None):
         # PDE function WITH unknowns argument (for SA and/or inverse problem)
         def pde_fn(x, f, unknowns=external_trainable_variables):
             # Determine material parameter values for constitutive equations
-            if cfg.task == "inverse":
+            if task == "inverse":
                 # Material params are at indices [n_sa_vars] and [n_sa_vars + 1]
                 l_val = unknowns[n_sa_vars] * variables_training_factor[0]
                 m_val = unknowns[n_sa_vars + 1] * variables_training_factor[1]
@@ -305,13 +309,13 @@ def train(config=None):
             # because they represent the actual applied loads to the system.
             # The trainable l_val, m_val are only used in the constitutive equations.
             fx, fy = body_forces(x, lmbd, mu, Q)
-            residuals = linear_elasticity_pde(x, f, l_val, m_val, lambda _: fx, lambda _: fy, net_type=cfg.net_type)
+            residuals = linear_elasticity_pde(x, f, l_val, m_val, lambda _: fx, lambda _: fy, net_type=net_type)
             # residuals = [momentum_x, momentum_y, stress_x, stress_y, stress_xy]
             
             # Apply Self-Attention weights if enabled
-            if cfg.SA:
+            if sa_enabled:
                 pde_w = unknowns[0].flatten()  # SA_pde_weight is always first
-                mat_w = pde_w if cfg.SA_share_weights else unknowns[1].flatten()
+                mat_w = pde_w if sa_share_weights else unknowns[1].flatten()
                 
                 # Weight PDE losses (momentum equations)
                 residuals[0] = pde_w * residuals[0]
@@ -326,22 +330,24 @@ def train(config=None):
         # Simple PDE function WITHOUT unknowns (forward problem, no SA)
         def pde_fn(x, f):
             fx, fy = body_forces(x, lmbd, mu, Q)
-            return linear_elasticity_pde(x, f, lmbd, mu, lambda _: fx, lambda _: fy, net_type=cfg.net_type)
+            return linear_elasticity_pde(x, f, lmbd, mu, lambda _: fx, lambda _: fy, net_type=net_type)
 
     # Boundary Conditions / Data
     bcs = []
-    if cfg.task == "inverse":
+    if task == "inverse":
         # Generate synthetic data
-        X_DIC_input = [np.linspace(0, 1, cfg.n_DIC).reshape(-1, 1)]*2
-        if cfg.net_type != "SPINN":
+        n_DIC = cfg.task.inverse.n_observations
+        X_DIC_input = [np.linspace(0, 1, n_DIC).reshape(-1, 1)]*2
+        if net_type != "SPINN":
              X_DIC_mesh = np.meshgrid(X_DIC_input[0].squeeze(), X_DIC_input[1].squeeze(), indexing="ij")
              X_DIC_input = np.stack((X_DIC_mesh[0].ravel(), X_DIC_mesh[1].ravel()), axis=1)
         
         # Exact solution for data generation
-        DIC_data = exact_solution(X_DIC_input, lmbd, mu, Q, net_type=cfg.net_type)[:, :2]
+        DIC_data = exact_solution(X_DIC_input, lmbd, mu, Q, net_type=net_type)[:, :2]
         
         # Add noise
-        noise_floor = cfg.noise_ratio * np.std(DIC_data)
+        noise_ratio = cfg.task.inverse.noise_ratio
+        noise_floor = noise_ratio * np.std(DIC_data)
         DIC_data += np.random.normal(0, noise_floor, DIC_data.shape)
         
         measure_Ux = dde.PointSetOperatorBC(X_DIC_input, DIC_data[:, 0:1], lambda x, f, x_np: f[0][:, 0:1])
@@ -354,64 +360,68 @@ def train(config=None):
         geom,
         pde_fn,
         bcs,
-        num_domain=cfg.num_domain,
-        num_boundary=0 if cfg.bc_type == "hard" else 4*int(np.sqrt(cfg.num_domain)),
-        solution=lambda x: exact_solution(x, lmbd, mu, Q, net_type=cfg.net_type),
+        num_domain=num_domain,
+        num_boundary=0 if bc_type == "hard" else 4*int(np.sqrt(num_domain)),
+        solution=lambda x: exact_solution(x, lmbd, mu, Q, net_type=net_type),
         num_test=1000,
-        is_SPINN=cfg.net_type == "SPINN",
+        is_SPINN=net_type == "SPINN",
     )
 
     # Network
-    if cfg.net_type == "SPINN":
-        layers = [2] + [cfg.width] * (cfg.n_hidden-1) + [cfg.rank] + [5]
-        net = dde.nn.SPINN(layers, cfg.activations, cfg.initialization, cfg.mlp_type, 
-                           params=cfg.restored_params)
+    mlp_type = OmegaConf.select(cfg, "model.architecture.mlp_type", default="mlp")
+    if net_type == "SPINN":
+        layers = [2] + [width] * (n_hidden-1) + [rank] + [5]
+        net = dde.nn.SPINN(layers, activations, initialization, mlp_type, 
+                           params=restored_params)
     else:
-        layers = [2] + [[cfg.width] * 5] * cfg.n_hidden + [5]
-        net = dde.nn.PFNN(layers, cfg.activations, cfg.initialization)
+        layers = [2] + [[width] * 5] * n_hidden + [5]
+        net = dde.nn.PFNN(layers, activations, initialization)
         # Restore params if provided (for PFNN, need to set after creation)
-        if cfg.restored_params is not None:
-            net.params = cfg.restored_params
+        if restored_params is not None:
+            net.params = restored_params
 
     # Hard BC transform
-    if cfg.bc_type == "hard":
+    if bc_type == "hard":
         def output_transform(x, y):
-            return HardBC(x, y, lmbd, mu, Q, net_type=cfg.net_type)
+            return HardBC(x, y, lmbd, mu, Q, net_type=net_type)
         net.apply_output_transform(output_transform)
 
     model = dde.Model(data, net)
     
     # Callbacks and Logging Setup
     callbacks = []
-    if cfg.available_time:
-        callbacks.append(dde.callbacks.Timer(cfg.available_time))
+    if available_time:
+        callbacks.append(dde.callbacks.Timer(available_time))
     
     # Prepare results directory
-    run_name = f"{cfg.task}_{cfg.net_type}_{int(time.time())}"
-    results_manager = ResultsManager(run_name=run_name, base_dir=cfg.results_dir)
+    results_manager = ResultsManager(
+        problem=cfg.problem.name or "analytical_plate",
+        experiment_name=cfg.results.experiment_name,
+        base_dir=cfg.results.base_dir
+    )
 
     # Variable logging callbacks
     variable_value_callback = None
     variable_array_callback = None
     
-    if cfg.task == "inverse":
+    if task == "inverse":
         variable_value_callback = VariableValue(
             [lmbd_trainable, mu_trainable], 
-            period=cfg.log_every, 
+            period=log_every, 
             filename=None,  # Never save during training, use save_run_data instead
             precision=4,
             scale_factors=variables_training_factor  # This scaling takes normalization into account
         )
         callbacks.append(variable_value_callback)
     
-    if cfg.SA:
+    if sa_enabled:
         # Set up SA weight logging
         sa_var_dict = {"pde_weights": sa_pde_weight}
-        if not cfg.SA_share_weights:
+        if not sa_share_weights:
             sa_var_dict["mat_weights"] = sa_mat_weight
         variable_array_callback = VariableArray(
             sa_var_dict,
-            period=cfg.log_every,
+            period=log_every,
             results_manager=results_manager,
             save_to_disk=False  # Never save during training, use save_run_data instead
         )
@@ -419,12 +429,13 @@ def train(config=None):
 
     # Field Logging
     all_fields = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
+    log_fields = list(cfg.problem.log_fields) if cfg.problem.log_fields else all_fields
     log_output_fields = {}
     for i, name in enumerate(all_fields):
-        if name in cfg.log_fields:
+        if name in log_fields:
             log_output_fields[i] = name
     
-    if cfg.net_type == "SPINN":
+    if net_type == "SPINN":
         X_plot = [np.linspace(0, 1, 100).reshape(-1, 1)] * 2
     else:
         x_lin = np.linspace(0, 1, 100, dtype=np.float32)
@@ -433,7 +444,7 @@ def train(config=None):
 
     from phd.models.cm.utils import FieldSaver
     field_saver = FieldSaver(
-        period=cfg.log_every,
+        period=log_every,
         x_eval=X_plot,
         results_manager=results_manager,
         field_names=log_output_fields,
@@ -444,29 +455,32 @@ def train(config=None):
     # Compile and Train
     model.compile(
         "adam", 
-        lr=cfg.lr, 
-        decay=cfg.lr_decay,  # Support for lr_decay
+        lr=lr, 
+        decay=lr_decay,
         metrics=["l2 relative error"], 
         external_trainable_variables=external_trainable_variables if external_trainable_variables else None
     )
     
     start_time = time.time()
-    losshistory, train_state = model.train(iterations=cfg.n_iter, callbacks=callbacks, display_every=cfg.log_every)
+    losshistory, train_state = model.train(iterations=n_iter, callbacks=callbacks, display_every=log_every)
     elapsed = time.time() - start_time
-    its_per_sec = cfg.n_iter / elapsed if elapsed > 0 and cfg.n_iter > 0 else 0
+    its_per_sec = n_iter / elapsed if elapsed > 0 and n_iter > 0 else 0
 
     # Evaluation
     eval_results = eval(cfg, model)
     
     # Print summary
-    if cfg.n_iter > 0:
+    if n_iter > 0:
         print(f"L2 relative error: {eval_results['l2_error']:.3e}")
         print(f"Elapsed training time: {elapsed:.2f} s, {its_per_sec:.2f} it/s")
 
+    # Store config as dict for results
+    config_dict = OmegaConf.to_container(cfg, resolve=True)
+    
     results = {
         "model": model,
         "losshistory": losshistory,
-        "config": cfg.__dict__,
+        "config": config_dict,
         "run_dir": str(results_manager.run_dir),
         "elapsed_time": elapsed,
         "iterations_per_sec": its_per_sec,
@@ -477,10 +491,10 @@ def train(config=None):
     }
 
     # Save all data to disk if requested
-    if cfg.save_on_disk:
+    if save_on_disk:
         save_run_data(results, results_manager)
         
-        if cfg.generate_video:
+        if generate_video:
             print("Generating animation...")
             fig, artists = plot_results(results)
             animate(
@@ -495,23 +509,40 @@ def train(config=None):
 # Save/Load wrappers - delegate to phd.io with problem-specific functions
 # =============================================================================
 
-def save_run_data(results, results_manager=None):
-    """Save run data to disk. See phd.io.save_run_data for details."""
-    return _save_run_data(results, results_manager)
+def save_run_data(results, run_name=None, base_dir=None):
+    """
+    Save run data to disk.
+    
+    Args:
+        results: Dictionary returned by train()
+        run_name: Name for this run. If None, extracted from config or auto-generated.
+        base_dir: Base directory for results. Defaults to project_root/results.
+    
+    Example:
+        save_run_data(results)  # Uses config values
+        save_run_data(results, run_name="my_experiment")
+    """
+    return _save_run_data(results, run_name=run_name, problem="analytical_plate", base_dir=base_dir)
 
 
-def load_run(run_dir, restore_model=False):
+def load_run(run_name, base_dir=None, restore_model=False):
     """
     Load a saved run from disk.
     
     Args:
-        run_dir: Path to the run directory
+        run_name: Name of the run (e.g., "SPINN_forward")
+        base_dir: Base directory for results. Defaults to project_root/results.
         restore_model: If True, reconstruct the model using saved parameters
     
     Returns:
         dict matching train() output structure
+        
+    Example:
+        results = load_run("SPINN_forward")
+        results = load_run("baseline", base_dir="./my_results")
     """
-    return _load_run(run_dir, restore_model=restore_model, train_fn=train, eval_fn=eval)
+    return _load_run(run_name, problem="analytical_plate", base_dir=base_dir, 
+                     restore_model=restore_model, train_fn=train, eval_fn=eval)
 
 
 # =============================================================================
@@ -530,17 +561,26 @@ def plot_results(results, iteration=-1, **opts):
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1:
+    
+    # Check if running as part of a wandb sweep
+    if len(sys.argv) > 1 and "--wandb" in sys.argv:
         import wandb
+        from phd.io import log_training_results
+        
         wandb.init()
-        config = dict(wandb.config)
-        results = train(config=config)
-        wandb.log({
-            **results['config'],
-            "final_loss": float(results['losshistory'].loss_train[-1].item()),
-            "elapsed_time": results['elapsed']
-        })
+        
+        # Convert wandb config to Hydra overrides
+        overrides = [f"{k}={v}" for k, v in wandb.config.items()]
+        cfg = load_config("analytical_plate", overrides=overrides)
+        
+        results = train(cfg)
+        
+        # Log comprehensive results including full loss/metric history
+        log_training_results(results, log_history=True)
         wandb.finish()
     else:
-        train()
+        # Running standalone with optional Hydra CLI overrides
+        overrides = sys.argv[1:] if len(sys.argv) > 1 else None
+        cfg = load_config("analytical_plate", overrides=overrides)
+        train(cfg)
 
