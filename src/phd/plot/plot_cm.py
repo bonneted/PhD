@@ -177,7 +177,7 @@ def init_plot(results, exact_solution_fn, iteration=-1, **opts):
         artists: dict containing all updatable artists and data for animation
     """
     o = {"fields": None, "show_metrics": True, "show_residual": True, "dpi": 100, 
-         "metrics": ["Residual"], "step_type": "iteration", "time_unit": "min",
+         "metrics": ["L2 Error"], "step_type": "iteration", "time_unit": "min",
          "show_iter": False, **opts}
     
     steps, metrics, vars_history, fields_init, get_snapshot_fn, (mx, my), config, fields_dict = process_results(

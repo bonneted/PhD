@@ -578,7 +578,8 @@ def save_run_data(results, run_name=None, problem=None, base_dir=None):
 def _save_run_metadata(results, rm):
     """Save run_data.json with config, metrics, and evaluation."""
     run_data = {
-        "config": results.get("config", {}),
+        "config": results.get("config", {})
+        "config": OmegaConf.to_container(results.get("config", {}), resolve=True),
         "run_metrics": {
             "elapsed_time": results.get("elapsed_time"),
             "iterations_per_sec": results.get("iterations_per_sec"),

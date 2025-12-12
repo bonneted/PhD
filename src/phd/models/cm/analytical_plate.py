@@ -545,14 +545,11 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
     # if n_iter > 0:
     #     print(f"L2 relative error: {eval_results['l2_error']:.3e}")
     #     print(f"Elapsed training time: {elapsed:.2f} s, {its_per_sec:.2f} it/s")
-
-    # Store config as dict for results
-    config_dict = OmegaConf.to_container(cfg, resolve=True)
     
     results = {
         "model": model,
         "losshistory": losshistory,
-        "config": config_dict,
+        "config": cfg,
         "run_dir": str(results_manager.run_dir),
         "elapsed_time": elapsed,
         "iterations_per_sec": its_per_sec,

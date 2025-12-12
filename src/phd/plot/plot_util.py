@@ -67,7 +67,7 @@ def init_metrics(ax, steps, metrics_dict, selected_metrics=None, xlabel=None,
         dict of artists for animation updates
     """
     DEFAULT_LATEX_NAMES = {
-        "Residual": r"$E_{L_2}$",
+        "L2 Error": r"$E_{L_2}$",
         "PDE Loss": r"$\mathcal{L}_{\text{PDE}}$",
         "Material Loss": r"$\mathcal{L}_{\text{mat}}$",
         "DIC Loss": r"$\mathcal{L}_{\text{DIC}}$",
