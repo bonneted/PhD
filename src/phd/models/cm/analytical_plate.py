@@ -112,71 +112,6 @@ def HardBC_displacement(x, f, net_type="SPINN"):
 # Backwards compatibility
 HardBC = HardBC_mixed
 
-def eval(cfg: DictConfig, model, ngrid: int = 100):
-    """
-    Evaluate trained model on test data.
-    
-    Args:
-        cfg: DictConfig with problem configuration
-        model: Trained DeepXDE model
-        ngrid: Grid resolution for evaluation
-    
-    Returns:
-        dict with prediction fields, errors, and metrics
-    """
-    # Extract material parameters from DictConfig
-    lmbd = cfg.problem.material.lmbd
-    mu = cfg.problem.material.mu
-    Q = cfg.problem.material.Q
-    net_type = cfg.model.net_type
-    
-    # Create evaluation grid
-    x_lin = np.linspace(0, 1, ngrid)
-    if net_type == "SPINN":
-        X_input = [x_lin.reshape(-1, 1), x_lin.reshape(-1, 1)]
-    else:
-        Xmesh, Ymesh = np.meshgrid(x_lin, x_lin, indexing="ij")
-        X_input = np.stack((Xmesh.ravel(), Ymesh.ravel()), axis=1)
-    
-    # Get exact solution
-    y_exact = exact_solution(X_input, lmbd, mu, Q, net_type=net_type)
-    
-    # Get model predictions
-    y_pred = model.predict(X_input)
-    
-    # Reshape to 2D fields
-    field_names = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
-    fields_pred = {}
-    fields_exact = {}
-    fields_error = {}
-    
-    for i, name in enumerate(field_names):
-        exact_field = y_exact[:, i].reshape(ngrid, ngrid)
-        pred_field = y_pred[:, i].reshape(ngrid, ngrid)
-        fields_exact[name] = exact_field
-        fields_pred[name] = pred_field
-        fields_error[name] = pred_field - exact_field
-    
-    # Calculate metrics
-    l2_error = float(dde.metrics.l2_relative_error(y_exact, y_pred))
-    
-    # Per-field L2 errors
-    field_l2_errors = {}
-    for i, name in enumerate(field_names):
-        field_l2_errors[name] = float(dde.metrics.l2_relative_error(
-            y_exact[:, i:i+1], y_pred[:, i:i+1]
-        ))
-    
-    return {
-        "fields_pred": fields_pred,
-        "fields_exact": fields_exact,
-        "fields_error": fields_error,
-        "l2_error": l2_error,
-        "field_l2_errors": field_l2_errors,
-        "ngrid": ngrid,
-    }
-
-
 def train(cfg: DictConfig = None, overrides: Optional[list] = None):
     """Train analytical plate model.
     
@@ -187,7 +122,7 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
         overrides: List of Hydra overrides if cfg is None
     
     Returns:
-        dict with model, losshistory, config, evaluation, etc.
+        dict with model, losshistory, config, fields, and callbacks.
     """
     if cfg is None:
         cfg = load_config("analytical_plate", overrides=overrides)
@@ -538,14 +473,6 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
     elapsed = time.time() - start_time
     its_per_sec = n_iter / elapsed if elapsed > 0 and n_iter > 0 else 0
 
-    # Evaluation
-    # eval_results = eval(cfg, model)
-    
-    # Print summary
-    # if n_iter > 0:
-    #     print(f"L2 relative error: {eval_results['l2_error']:.3e}")
-    #     print(f"Elapsed training time: {elapsed:.2f} s, {its_per_sec:.2f} it/s")
-    
     results = {
         "model": model,
         "losshistory": losshistory,
@@ -553,7 +480,6 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
         "run_dir": str(results_manager.run_dir),
         "elapsed_time": elapsed,
         "iterations_per_sec": its_per_sec,
-        # "evaluation": eval_results,
         "field_saver": field_saver, # For accessing logged fields (Ux, Uy, Sxx, Syy, Sxy over time)
         "variable_value_callback": variable_value_callback, # For accessing logged material params over time
         "variable_array_callback": variable_array_callback, # For accessing logged SA weights over time
@@ -611,7 +537,7 @@ def load_run(run_name, base_dir=None, restore_model=False):
         results = load_run("baseline", base_dir="./my_results")
     """
     return _load_run(run_name, problem="analytical_plate", base_dir=base_dir, 
-                     restore_model=restore_model, train_fn=train, eval_fn=eval)
+                     restore_model=restore_model, train_fn=train)
 
 
 # =============================================================================

@@ -48,7 +48,7 @@ def exact_solution(cfg: DictConfig, dataset_path: str = data_set_path):
 
 
 def test_data(cfg: DictConfig, dataset_path: str = data_set_path):
-    """Generate test data grids for evaluation/plotting."""
+    """Generate test data grids for plotting."""
     x, t, u = _load_reference_data(dataset_path)
     xx, tt = np.meshgrid(x, t, indexing="ij")
     

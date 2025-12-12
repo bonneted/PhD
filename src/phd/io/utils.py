@@ -578,24 +578,13 @@ def save_run_data(results, run_name=None, problem=None, base_dir=None):
 def _save_run_metadata(results, rm):
     """Save run_data.json with config, metrics, and evaluation."""
     run_data = {
-        "config": results.get("config", {})
         "config": OmegaConf.to_container(results.get("config", {}), resolve=True),
         "run_metrics": {
             "elapsed_time": results.get("elapsed_time"),
             "iterations_per_sec": results.get("iterations_per_sec"),
             "run_dir": results.get("run_dir"),
         },
-        "evaluation": {},
     }
-    
-    # Add evaluation results (excluding numpy arrays)
-    if results.get("evaluation"):
-        eval_results = results["evaluation"]
-        run_data["evaluation"] = {
-            "l2_error": eval_results.get("l2_error"),
-            "field_l2_errors": eval_results.get("field_l2_errors"),
-            "ngrid": eval_results.get("ngrid"),
-        }
     
     run_data_file = rm.get_path("run_data.json")
     with open(run_data_file, "w") as f:
@@ -690,7 +679,7 @@ def _save_field_snapshots(results, rm):
 # Loading Functions
 # =============================================================================
 
-def load_run(run_name, problem, base_dir=None, restore_model=False, train_fn=None, eval_fn=None):
+def load_run(run_name, problem, base_dir=None, restore_model=False, train_fn=None):
     """
     Load a saved run from disk.
     
@@ -700,7 +689,6 @@ def load_run(run_name, problem, base_dir=None, restore_model=False, train_fn=Non
         base_dir: Base directory for results. Defaults to project_root/results.
         restore_model: If True, reconstruct the model using saved parameters
         train_fn: Training function (required if restore_model=True)
-        eval_fn: Evaluation function (required if restore_model=True)
     
     Returns:
         dict matching train() output structure
@@ -741,7 +729,7 @@ def load_run(run_name, problem, base_dir=None, restore_model=False, train_fn=Non
     if restore_model and model_params is not None and config:
         if train_fn is None:
             raise ValueError("train_fn is required when restore_model=True")
-        result = _restore_model(result, train_fn, eval_fn)
+        result = _restore_model(result, train_fn)
     
     return result
 
@@ -869,7 +857,7 @@ def _load_field_snapshots(run_dir, rm):
     return field_saver
 
 
-def _restore_model(result, train_fn, eval_fn=None):
+def _restore_model(result, train_fn):
     """Restore a model from saved parameters."""
     print("Restoring model from saved parameters...")
     config = result["config"]
@@ -884,10 +872,6 @@ def _restore_model(result, train_fn, eval_fn=None):
     
     restored = train_fn(restore_config)
     result["model"] = restored["model"]
-    
-    # Re-evaluate with restored model
-    if eval_fn is not None:
-        result["evaluation"] = eval_fn(config, restored["model"])
     
     return result
 
