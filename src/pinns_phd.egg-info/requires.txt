@@ -10,3 +10,5 @@ pandas
 scienceplots
 wandb
 jupyter
+hydra-core
+omegaconf

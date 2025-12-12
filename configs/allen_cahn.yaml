@@ -1,0 +1,71 @@
+# Allen-Cahn problem - Complete self-contained configuration
+# This file contains ALL settings for running Allen-Cahn experiments.
+# Override any value from notebook: load_config("allen_cahn", overrides=["training.n_iter=50000"])
+
+# --- Problem Definition ---
+problem:
+  name: allen_cahn
+  pde_coefficient: 0.001  # 'd' parameter in Allen-Cahn equation
+
+# --- Model Architecture ---
+model:
+  net_type: SPINN  # SPINN or PINN
+  
+  architecture:
+    n_hidden: 3
+    width: 20
+    rank: 64          # Only used for SPINN
+    activations: sin  # tanh, sin, relu
+    initialization: "Glorot normal"
+    mlp_type: mlp     # mlp or modified-mlp
+  
+  fourier_features:
+    enabled: true
+    n_features: 128
+    sigma: 10.0
+
+# --- Training Settings ---
+training:
+  n_iter: 100000
+  lr: 1.0e-5
+  num_domain: 22500  # 150^2 collocation points
+  bc_type: hard      # hard or soft
+  
+  # Learning rate schedule: null or [type, ...params]
+  # Options:
+  #   ["warmup cosine", init_lr, peak_lr, warmup_iters, total_iters, min_lr]
+  #   ["exponential", init_lr, decay_steps, decay_rate]
+  #   ["cosine", init_lr, total_iters, min_lr]
+  lr_decay:
+    - "warmup cosine"
+    - 1.0e-5   # init_lr
+    - 1.0e-3   # peak_lr
+    - 1000     # warmup_iters
+    - 100000   # total_iters
+    - 1.0e-5   # min_lr
+  
+  # Self-Attention (adaptive loss weighting)
+  self_attention:
+    enabled: false
+    init: constant
+    update_factor: -1.0
+    share_weights: true
+  
+  # Logging
+  log_every: 100
+  generate_video: false
+
+# --- Task ---
+task:
+  type: forward  # forward or inverse
+  # For inverse problems, specify parameters to infer:
+  # inverse_params: [pde_coefficient]
+
+# --- Results ---
+results:
+  base_dir: results
+  experiment_name: null  # Auto-generated if null
+  save_on_disk: false
+
+# --- Reproducibility ---
+seed: 0

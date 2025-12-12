@@ -15,3 +15,5 @@ Requires-Dist: pandas
 Requires-Dist: scienceplots
 Requires-Dist: wandb
 Requires-Dist: jupyter
+Requires-Dist: hydra-core
+Requires-Dist: omegaconf

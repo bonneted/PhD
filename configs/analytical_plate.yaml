@@ -1,0 +1,73 @@
+# Analytical Plate problem - Complete self-contained configuration
+# This file contains ALL settings for running analytical plate experiments.
+# Override any value from notebook: load_config("analytical_plate", overrides=["task.type=inverse"])
+
+# --- Problem Definition ---
+problem:
+  name: analytical_plate
+  
+  # Material properties (Lamé parameters)
+  material:
+    lmbd: 1.0
+    mu: 0.5
+    Q: 4.0
+  
+  # Fields to log during training
+  log_fields:
+    - Ux
+    - Uy
+    - Sxx
+    - Syy
+    - Sxy
+
+# --- Model Architecture ---
+model:
+  net_type: SPINN  # SPINN or PINN
+  
+  architecture:
+    n_hidden: 3
+    width: 20
+    rank: 64
+    activations: tanh
+    initialization: "Glorot normal"
+    mlp_type: mlp
+  
+  fourier_features:
+    enabled: false
+    n_features: 64
+    sigma: 1.0
+
+# --- Training Settings ---
+training:
+  n_iter: 10000
+  lr: 1.0e-3
+  num_domain: 4096  # 64^2 collocation points
+  bc_type: hard
+  
+  lr_decay: null  # No schedule by default
+  
+  self_attention:
+    enabled: false
+    init: constant
+    update_factor: -1.0
+    share_weights: true
+  
+  log_every: 100
+  generate_video: false
+
+# --- Task ---
+task:
+  type: forward  # forward or inverse
+  # For inverse problems:
+  inverse_params:
+    - lmbd
+    - mu
+
+# --- Results ---
+results:
+  base_dir: results
+  experiment_name: null
+  save_on_disk: false
+
+# --- Reproducibility ---
+seed: 0
