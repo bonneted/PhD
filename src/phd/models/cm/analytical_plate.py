@@ -485,9 +485,9 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
         "elapsed_time": elapsed,
         "iterations_per_sec": its_per_sec,
         "evaluation": eval_results,
-        "field_saver": field_saver,
-        "variable_value_callback": variable_value_callback,
-        "variable_array_callback": variable_array_callback,
+        "field_saver": field_saver, # For accessing logged fields (Ux, Uy, Sxx, Syy, Sxy over time)
+        "variable_value_callback": variable_value_callback, # For accessing logged material params over time
+        "variable_array_callback": variable_array_callback, # For accessing logged SA weights over time
     }
 
     # Save all data to disk if requested
