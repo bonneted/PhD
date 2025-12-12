@@ -1,70 +1,86 @@
 {
   "config": {
-    "task": "forward",
-    "net_type": "SPINN",
-    "mlp_type": "mlp",
-    "activations": "tanh",
-    "initialization": "Glorot uniform",
-    "n_hidden": 3,
-    "width": 40,
-    "rank": 32,
-    "num_domain": 4096,
-    "lr": 0.001,
-    "lr_decay": [
-      "warmup cosine",
-      1e-05,
-      0.001,
-      1000,
-      50000,
-      1e-05
-    ],
-    "n_iter": 50000,
-    "seed": 0,
-    "lmbd": 1.0,
-    "mu": 0.5,
-    "Q": 4.0,
-    "bc_type": "hard",
-    "noise_ratio": 0.0,
-    "n_DIC": 10,
-    "lmbd_init": 2.0,
-    "mu_init": 0.3,
-    "variables_training_factors": [
-      1.0,
-      1.0
-    ],
-    "normalize_parameters": true,
-    "SA": false,
-    "SA_init": "constant",
-    "SA_update_factor": -1.0,
-    "SA_share_weights": true,
-    "available_time": null,
-    "log_every": 200,
-    "results_dir": "analytical_plate_results",
-    "generate_video": false,
-    "log_fields": [
-      "Ux",
-      "Uy",
-      "Sxx",
-      "Syy",
-      "Sxy"
-    ],
-    "save_on_disk": false,
-    "restored_params": null,
-    "restored_external_vars": null
+    "problem": {
+      "name": "analytical_plate",
+      "material": {
+        "lmbd": 1.0,
+        "mu": 0.5,
+        "Q": 4.0
+      },
+      "log_fields": [
+        "Ux",
+        "Uy",
+        "Sxx",
+        "Syy",
+        "Sxy"
+      ]
+    },
+    "model": {
+      "net_type": "SPINN",
+      "formulation": "mixed",
+      "architecture": {
+        "n_hidden": 3,
+        "width": 20,
+        "rank": 64,
+        "activations": "tanh",
+        "initialization": "Glorot normal",
+        "mlp_type": "mlp"
+      },
+      "fourier_features": {
+        "enabled": false,
+        "n_features": 64,
+        "sigma": 1.0
+      }
+    },
+    "training": {
+      "n_iter": 50000,
+      "lr": 0.001,
+      "num_domain": 4096,
+      "bc_type": "hard",
+      "lr_decay": [
+        "warmup cosine",
+        1e-05,
+        0.001,
+        1000,
+        50000,
+        1e-05
+      ],
+      "self_attention": {
+        "enabled": false,
+        "init": "constant",
+        "update_factor": -1.0,
+        "share_weights": true
+      },
+      "log_every": 200,
+      "generate_video": false
+    },
+    "task": {
+      "type": "forward",
+      "inverse_params": [
+        "lmbd",
+        "mu"
+      ]
+    },
+    "results": {
+      "base_dir": "results",
+      "experiment_name": null,
+      "save_on_disk": false
+    },
+    "seed": 0
   },
   "run_metrics": {
-    "elapsed_time": 71.94413590431213,
-    "iterations_per_sec": 694.9836754798404,
-    "run_dir": "analytical_plate_results/SPINN_forward"
+    "elapsed_time": 65.65098214149475,
+    "iterations_per_sec": 761.6032292134967,
+    "run_dir": "/home/r2d2/code/PhD/results/analytical_plate/SPINN_forward"
   },
   "evaluation": {
-    "l2_error": 0.005903797224164009,
+    "l2_error": 0.006959501188248396,
     "field_l2_errors": {
-      "Ux": 0.003167463466525078,
-      "Uy": 0.00267603131942451,
-      "Sxx": 0.00261849258095026,
-      "Syy": 0.010194317437708378,
-      "Sxy": 0.014475330710411072
+      "Ux": 0.004730765707790852,
+      "Uy": 0.003954396583139896,
+      "Sxx": 0.0027117901481688023,
+      "Syy": 0.012621728703379631,
+      "Sxy": 0.01114631723612547
     },
     "ngrid": 100
   }

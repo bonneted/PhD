@@ -23,6 +23,7 @@ problem:
 # --- Model Architecture ---
 model:
   net_type: SPINN  # SPINN or PINN
+  formulation: mixed  # mixed (5 outputs: Ux,Uy,Sxx,Syy,Sxy) or displacement (2 outputs: Ux,Uy)
   
   architecture:
     n_hidden: 3
@@ -39,9 +40,9 @@ model:
 
 # --- Training Settings ---
 training:
-  n_iter: 10000
+  n_iter: 50000
   lr: 1.0e-3
-  num_domain: 4096  # 64^2 collocation points
+  num_domain: 10000  # 100^2 collocation points
   bc_type: hard
   
   lr_decay: null  # No schedule by default
@@ -52,7 +53,7 @@ training:
     update_factor: -1.0
     share_weights: true
   
-  log_every: 100
+  log_every: 200
   generate_video: false
 
 # --- Task ---

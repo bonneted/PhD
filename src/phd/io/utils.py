@@ -19,6 +19,7 @@ import numpy as np
 from pathlib import Path
 from scipy.interpolate import RegularGridInterpolator
 import deepxde as dde
+from omegaconf import OmegaConf
 
 
 # =============================================================================
@@ -180,24 +181,50 @@ class FieldSaver(dde.callbacks.Callback):
     Args:
         period (int): Interval (number of epochs) between saving fields.
         x_eval: Evaluation points for prediction.
-        field_names (dict): Mapping from output index to field name.
+        field_names (dict or list): Mapping from output index to field name (dict),
+            or list of field names if using output_field_fn.
         results_manager: Optional ResultsManager for saving to disk.
         save_to_disk (bool): Whether to save snapshots to disk during training.
+        output_field_fn: Optional function (x, f, field_name) -> array to compute
+            derived fields like strain/stress. If provided, field_names should be
+            a list of field names to compute. f is a tuple (output_values, net_fn).
     """
-    def __init__(self, period, x_eval, field_names, results_manager=None, save_to_disk=True):
+    def __init__(self, period, x_eval, field_names, results_manager=None, save_to_disk=True, output_field_fn=None):
         super().__init__()
         self.period = period
         self.x_eval = x_eval
         self.results_manager = results_manager
-        self.field_names = field_names
         self.save_to_disk = save_to_disk
+        self.output_field_fn = output_field_fn
         self.steps = []
         self.history = []  # List of (step, data_dict)
+        self._jax_op = None  # JIT-compiled operator for derived fields
+        
+        # Normalize field_names to list
+        if isinstance(field_names, dict):
+            self.field_names = list(field_names.values())
+            self.field_indices = field_names  # Keep original for direct output access
+        else:
+            self.field_names = list(field_names)
+            self.field_indices = None
         
         if self.save_to_disk and self.results_manager:
             # Create fields directory
             self.fields_dir = self.results_manager.run_dir / "fields"
             self.fields_dir.mkdir(exist_ok=True)
+
+    def on_train_begin(self):
+        """Initialize JAX operator for derived field computation."""
+        if self.output_field_fn is not None:
+            import jax
+            
+            def jax_op(inputs, params, field_name):
+                """JIT-compiled operator to compute field from network."""
+                y_fn = lambda _x: self.model.net.apply(params, _x)
+                f = (y_fn(inputs), y_fn)
+                return self.output_field_fn(inputs, f, field_name)
+            
+            self._jax_op = jax.jit(jax_op, static_argnums=(2,))
 
     def on_epoch_end(self):
         if self.model.train_state.epoch % self.period == 0:
@@ -205,14 +232,25 @@ class FieldSaver(dde.callbacks.Callback):
 
     def _record(self, step):
         """Record and optionally save fields at given step."""
-        y_pred = self.model.predict(self.x_eval)
-        
-        # y_pred shape: (N, n_fields)
-        # Handle list of arrays for SPINN if needed
-        if isinstance(y_pred, list):
-            y_pred = np.array(y_pred)
-             
-        data_dict = {name: y_pred[:, i] for i, name in enumerate(self.field_names.values())}
+        if self.output_field_fn is not None:
+            # Use JIT-compiled operator for derived fields
+            data_dict = {}
+            params = self.model.net.params
+            for name in self.field_names:
+                data_dict[name] = np.asarray(self._jax_op(self.x_eval, params, name))
+        else:
+            # Direct output access
+            y_pred = self.model.predict(self.x_eval)
+            
+            # y_pred shape: (N, n_fields)
+            # Handle list of arrays for SPINN if needed
+            if isinstance(y_pred, list):
+                y_pred = np.array(y_pred)
+            
+            if self.field_indices is not None:
+                data_dict = {name: y_pred[:, i] for i, name in self.field_indices.items()}
+            else:
+                data_dict = {name: y_pred[:, i] for i, name in enumerate(self.field_names)}
         
         # Store in memory
         self.history.append((step, data_dict))
@@ -677,7 +715,7 @@ def load_run(run_name, problem, base_dir=None, restore_model=False, train_fn=Non
         raise FileNotFoundError(f"Run directory not found: {run_dir}")
     
     # Load all components
-    config, run_metrics, evaluation = _load_run_metadata(run_dir, rm)
+    config, run_metrics = _load_run_metadata(run_dir, rm)
     losshistory = _load_loss_history(rm)
     variable_value_callback = _load_variable_history(run_dir)
     model_params, external_vars = _load_model_params(run_dir)
@@ -685,11 +723,11 @@ def load_run(run_name, problem, base_dir=None, restore_model=False, train_fn=Non
     
     result = {
         "config": config,
+        "run_metrics": run_metrics,
         "losshistory": losshistory,
         "run_dir": str(run_dir),
         "elapsed_time": run_metrics.get("elapsed_time"),
         "iterations_per_sec": run_metrics.get("iterations_per_sec"),
-        "evaluation": evaluation,
         "field_saver": field_saver,
         "variable_value_callback": variable_value_callback,
         "model_params": model_params,
@@ -715,19 +753,18 @@ def _load_run_metadata(run_dir, rm):
     if run_data_file.exists():
         with open(run_data_file, "r") as f:
             run_data = json.load(f)
-        config = run_data.get("config", {})
+        config = OmegaConf.create(run_data.get("config", {}))
         run_metrics = run_data.get("run_metrics", {})
-        evaluation = run_data.get("evaluation", {})
     else:
         # Fallback: try legacy config.json
         config_file = run_dir / "config.json"
         if config_file.exists():
             with open(config_file, "r") as f:
-                config = json.load(f)
+                config = OmegaConf.create(json.load(f))
         else:
             print(f"Warning: No config found in {run_dir}")
     
-    return config, run_metrics, evaluation
+    return config, run_metrics
 
 
 def _load_loss_history(rm):

@@ -30,14 +30,17 @@ LATEX_FIELD_NAMES = {
 }
 
 
-def compute_metrics_from_history(losshistory):
+def compute_metrics_from_history(losshistory, config):
     """
     Derive named metrics from LossHistory object.
     
     loss_train structure:
-    - Forward: [pde_x, pde_y, mat_x, mat_y, mat_xy]
-    - Inverse: [pde_x, pde_y, mat_x, mat_y, mat_xy, DIC_x, DIC_y]
-    
+    - Mixed formulation:
+        - Forward: [pde_x, pde_y, mat_x, mat_y, mat_xy]
+        - Inverse: [pde_x, pde_y, mat_x, mat_y, mat_xy, DIC_x, DIC_y]
+    - Displacement formulation:
+        - Forward: [pde_x, pde_y, bc_stress_top, bc_stress_left, bc_stress_right]
+        - Inverse: [pde_x, pde_y, mat_x, mat_y, DIC_x, DIC_y]
     metrics_test contains the L2 relative error separately.
     
     Returns:
@@ -47,12 +50,20 @@ def compute_metrics_from_history(losshistory):
     loss_train = np.array([np.array(l) for l in losshistory.loss_train])
     metrics_test = np.array(losshistory.metrics_test).squeeze()
     n_cols = loss_train.shape[1]
+
+    if config.model.formulation == "displacement":
+        BC_loss = np.mean(loss_train[:, 2:], axis=1)
+        mat_loss = None
+    else:
+        mat_loss = np.mean(loss_train[:, 2:5], axis=1)
+        BC_loss = None
     
     metrics = {
         "steps": steps,
-        "Residual": metrics_test,
+        "L2 Error": metrics_test,
         "PDE Loss": np.mean(loss_train[:, 0:2], axis=1),
-        "Material Loss": np.mean(loss_train[:, 2:5], axis=1),
+        "Material Loss": mat_loss,
+        "Stress BC Loss": BC_loss,
         "Total Loss": np.mean(loss_train, axis=1),
     }
     
@@ -82,7 +93,7 @@ def process_results(results, exact_solution_fn, plot_fields=None):
         fields_dict: dict of field arrays (for animation frame access)
     """
     config = results["config"]
-    metrics = compute_metrics_from_history(results["losshistory"])
+    metrics = compute_metrics_from_history(results["losshistory"], config)
     
     # Get field data and steps from field_saver
     fields_dict = {}

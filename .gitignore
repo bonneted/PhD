@@ -5,4 +5,4 @@ notebooks/analytical_plate_results/
 wandb/
 src/pinns_phd.egg-info/
 results/IV_ImprovingPINNs/IV_5_CM_Plate/
-results/
+results/**

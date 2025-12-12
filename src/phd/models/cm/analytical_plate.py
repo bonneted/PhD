@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Optional
 from omegaconf import DictConfig, OmegaConf
-from phd.models.cm.utils import transform_coords, linear_elasticity_pde
+from phd.physics import transform_coords, make_pde, stress_from_output, make_output_field_fn
 from phd.io import VariableValue, VariableArray, continue_training
 from phd.io import save_run_data as _save_run_data
 from phd.io import load_run as _load_run
@@ -27,8 +27,7 @@ from phd.config import load_config
 
 def exact_solution(x, lmbd, mu, Q, net_type="SPINN"):
     if net_type == "SPINN" and isinstance(x, (list,tuple)):
-        x_mesh = [x_.ravel() for x_ in jnp.meshgrid(x[0].squeeze(), x[1].squeeze(), indexing="ij")]
-        x = dde.backend.stack(x_mesh, axis=-1)
+        x = transform_coords([x[0], x[1]])
 
     ux = np.cos(2 * np.pi * x[:, 0:1]) * np.sin(np.pi * x[:, 1:2])
     uy = np.sin(np.pi * x[:, 0:1]) * Q * x[:, 1:2] ** 4 / 4
@@ -83,7 +82,8 @@ def body_forces(x, lmbd, mu, Q):
     )
     return fx, fy
 
-def HardBC(x, f, lmbd, mu, Q, net_type="SPINN"):
+def HardBC_mixed(x, f, lmbd, mu, Q, net_type="SPINN"):
+    """Hard BC for mixed formulation (5 outputs: Ux, Uy, Sxx, Syy, Sxy)."""
     if net_type == "SPINN" and isinstance(x, (list,tuple)):
         x = transform_coords(x)
 
@@ -97,6 +97,20 @@ def HardBC(x, f, lmbd, mu, Q, net_type="SPINN"):
     Syy = f[:, 3] * (1 - x[:, 1]) + (lmbd + 2 * mu) * Q * sin(pi * x[:, 0])
     Sxy = f[:, 4]
     return dde.backend.stack((Ux, Uy, Sxx, Syy, Sxy), axis=1)
+
+
+def HardBC_displacement(x, f, net_type="SPINN"):
+    """Hard BC for displacement formulation (2 outputs: Ux, Uy)."""
+    if net_type == "SPINN" and isinstance(x, (list, tuple)):
+        x = transform_coords(x)
+
+    Ux = f[:, 0] * x[:, 1] * (1 - x[:, 1])
+    Uy = f[:, 1] * x[:, 0] * (1 - x[:, 0]) * x[:, 1]
+    return dde.backend.stack((Ux, Uy), axis=1)
+
+
+# Backwards compatibility
+HardBC = HardBC_mixed
 
 def eval(cfg: DictConfig, model, ngrid: int = 100):
     """
@@ -181,6 +195,7 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
     # Extract commonly used config values for readability
     task = cfg.task.type  # "forward" or "inverse"
     net_type = cfg.model.net_type
+    formulation = OmegaConf.select(cfg, "model.formulation", default="mixed")  # "mixed" or "displacement"
     seed = cfg.seed
     
     # Material parameters (true values)
@@ -289,10 +304,17 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
             print(f"  Restored var_{i}: shape={val.shape if hasattr(val, 'shape') else 'scalar'}")
     
     # =========================================================================
-    # Define PDE function
+    # Define PDE function using make_pde factory
     # CRITICAL: unknowns order is [SA_pde, SA_mat?, lmbd, mu] based on how we built the list
     # If no external_trainable_variables, use a simple 2-arg function.
     # =========================================================================
+    # Body force function (uses TRUE material parameters)
+    def body_force_fn(x):
+        return body_forces(x, lmbd, mu, Q)
+    
+    # Number of residuals depends on formulation
+    n_residuals = 5 if formulation == "mixed" else 2
+    
     if external_trainable_variables:
         # PDE function WITH unknowns argument (for SA and/or inverse problem)
         def pde_fn(x, f, unknowns=external_trainable_variables):
@@ -305,12 +327,15 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
                 l_val = lmbd
                 m_val = mu
             
-            # IMPORTANT: Body forces use TRUE material parameters (lmbd, mu)
-            # because they represent the actual applied loads to the system.
-            # The trainable l_val, m_val are only used in the constitutive equations.
-            fx, fy = body_forces(x, lmbd, mu, Q)
-            residuals = linear_elasticity_pde(x, f, l_val, m_val, lambda _: fx, lambda _: fy, net_type=net_type)
-            # residuals = [momentum_x, momentum_y, stress_x, stress_y, stress_xy]
+            # Create PDE with current material parameters
+            pde_residual_fn = make_pde(
+                net_type=net_type,
+                formulation=formulation,
+                lmbd=l_val,
+                mu=m_val,
+                body_force_fn=body_force_fn,
+            )
+            residuals = pde_residual_fn(x, f)
             
             # Apply Self-Attention weights if enabled
             if sa_enabled:
@@ -320,20 +345,71 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
                 # Weight PDE losses (momentum equations)
                 residuals[0] = pde_w * residuals[0]
                 residuals[1] = pde_w * residuals[1]
-                # Weight material losses (constitutive equations)
-                residuals[2] = mat_w * residuals[2]
-                residuals[3] = mat_w * residuals[3]
-                residuals[4] = mat_w * residuals[4]
+                # Weight material losses (constitutive equations) - only for mixed
+                if formulation == "mixed":
+                    residuals[2] = mat_w * residuals[2]
+                    residuals[3] = mat_w * residuals[3]
+                    residuals[4] = mat_w * residuals[4]
             
             return residuals
     else:
         # Simple PDE function WITHOUT unknowns (forward problem, no SA)
+        # Create PDE once with fixed material parameters
+        _pde_residual_fn = make_pde(
+            net_type=net_type,
+            formulation=formulation,
+            lmbd=lmbd,
+            mu=mu,
+            body_force_fn=body_force_fn,
+        )
         def pde_fn(x, f):
-            fx, fy = body_forces(x, lmbd, mu, Q)
-            return linear_elasticity_pde(x, f, lmbd, mu, lambda _: fx, lambda _: fy, net_type=net_type)
+            return _pde_residual_fn(x, f)
 
-    # Boundary Conditions / Data
+    # =========================================================================
+    # Boundary Conditions
+    # For mixed: HardBC handles all BCs
+    # For displacement: HardBC handles displacement BCs, soft BCs for stress
+    # =========================================================================
     bcs = []
+    
+    # Displacement-based formulation: add soft BCs for stress at boundaries
+    if formulation == "displacement" and bc_type == "hard":
+        # Number of BC points along each edge
+        n_bc = int(np.sqrt(num_domain))
+        bc_coords = np.linspace(0, 1, n_bc)
+        
+        def make_stress_bc_operator(stress_component: str):
+            """Create operator function to compute stress from displacement."""
+            stress_idx = {"Sxx": 0, "Syy": 1, "Sxy": 2}[stress_component]
+            
+            def compute_stress(x, f, x_np):
+                stress = stress_from_output(x, f, net_type, formulation, lmbd, mu)
+                return stress[:, stress_idx].reshape(-1, 1)
+            
+            return compute_stress
+        
+        # For SPINN: BC points should be 2D arrays (not lists) for edge BCs
+        # to avoid meshgrid expansion
+        # Syy BC at top (y=1): Syy = (lmbd + 2*mu) * Q * sin(pi*x)
+        X_top = np.column_stack([bc_coords, np.ones(n_bc)])
+        if net_type == "SPINN":
+            X_top = [X_top[:, 0:1], jnp.array([1.0]).reshape(-1, 1)]
+
+        Syy_top_target = (lmbd + 2 * mu) * Q * np.sin(np.pi * bc_coords)
+        bc_Syy_top = dde.PointSetOperatorBC(X_top, Syy_top_target.reshape(-1, 1), make_stress_bc_operator("Syy"))
+        bcs.append(bc_Syy_top)
+        
+        # Sxx BC at left (x=0) and right (x=1): Sxx = 0
+        X_left = np.column_stack([np.zeros(n_bc), bc_coords]) 
+        X_right = np.column_stack([np.ones(n_bc), bc_coords])
+        if net_type == "SPINN":
+            X_left = [jnp.array([0.0]).reshape(-1, 1), X_left[:, 1:2]]
+            X_right = [jnp.array([1.0]).reshape(-1, 1), X_right[:, 1:2]]
+        
+        bc_Sxx_left = dde.PointSetOperatorBC(X_left, np.zeros((n_bc, 1)), make_stress_bc_operator("Sxx"))
+        bc_Sxx_right = dde.PointSetOperatorBC(X_right, np.zeros((n_bc, 1)), make_stress_bc_operator("Sxx"))
+        bcs.extend([bc_Sxx_left, bc_Sxx_right])
+    
     if task == "inverse":
         # Generate synthetic data
         n_DIC = cfg.task.inverse.n_observations
@@ -353,28 +429,30 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
         measure_Ux = dde.PointSetOperatorBC(X_DIC_input, DIC_data[:, 0:1], lambda x, f, x_np: f[0][:, 0:1])
         measure_Uy = dde.PointSetOperatorBC(X_DIC_input, DIC_data[:, 1:2], lambda x, f, x_np: f[0][:, 1:2])
     
-        bcs = [measure_Ux, measure_Uy]
+        bcs.extend([measure_Ux, measure_Uy])
 
+    # Number of network outputs depends on formulation
+    n_outputs = 5 if formulation == "mixed" else 2
+    
     # Data
     data = dde.data.PDE(
         geom,
         pde_fn,
         bcs,
         num_domain=num_domain,
-        num_boundary=0 if bc_type == "hard" else 4*int(np.sqrt(num_domain)),
-        solution=lambda x: exact_solution(x, lmbd, mu, Q, net_type=net_type),
-        num_test=1000,
+        num_boundary=0,
+        solution=lambda x: exact_solution(x, lmbd, mu, Q, net_type=net_type)[:, :n_outputs] if formulation == "displacement" else exact_solution(x, lmbd, mu, Q, net_type=net_type),
         is_SPINN=net_type == "SPINN",
     )
 
     # Network
     mlp_type = OmegaConf.select(cfg, "model.architecture.mlp_type", default="mlp")
     if net_type == "SPINN":
-        layers = [2] + [width] * (n_hidden-1) + [rank] + [5]
+        layers = [2] + [width] * (n_hidden-1) + [rank] + [n_outputs]
         net = dde.nn.SPINN(layers, activations, initialization, mlp_type, 
                            params=restored_params)
     else:
-        layers = [2] + [[width] * 5] * n_hidden + [5]
+        layers = [2] + [[width] * n_outputs] * n_hidden + [n_outputs]
         net = dde.nn.PFNN(layers, activations, initialization)
         # Restore params if provided (for PFNN, need to set after creation)
         if restored_params is not None:
@@ -382,8 +460,12 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
 
     # Hard BC transform
     if bc_type == "hard":
-        def output_transform(x, y):
-            return HardBC(x, y, lmbd, mu, Q, net_type=net_type)
+        if formulation == "mixed":
+            def output_transform(x, y):
+                return HardBC_mixed(x, y, lmbd, mu, Q, net_type=net_type)
+        else:
+            def output_transform(x, y):
+                return HardBC_displacement(x, y, net_type=net_type)
         net.apply_output_transform(output_transform)
 
     model = dde.Model(data, net)
@@ -394,9 +476,10 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
         callbacks.append(dde.callbacks.Timer(available_time))
     
     # Prepare results directory
+    experiment_name = cfg.results.experiment_name if cfg.results.experiment_name else f"{task}_{net_type}"
     results_manager = ResultsManager(
         problem=cfg.problem.name or "analytical_plate",
-        experiment_name=cfg.results.experiment_name,
+        run_name=experiment_name,
         base_dir=cfg.results.base_dir
     )
 
@@ -428,33 +511,22 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
         callbacks.append(variable_array_callback)
 
     # Field Logging
-    all_fields = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
-    log_fields = list(cfg.problem.log_fields) if cfg.problem.log_fields else all_fields
-    log_output_fields = {}
-    for i, name in enumerate(all_fields):
-        if name in log_fields:
-            log_output_fields[i] = name
-    
-    if net_type == "SPINN":
-        X_plot = [np.linspace(0, 1, 100).reshape(-1, 1)] * 2
-    else:
-        x_lin = np.linspace(0, 1, 100, dtype=np.float32)
-        X_mesh = np.meshgrid(x_lin, x_lin, indexing="ij")
-        X_plot = np.stack((X_mesh[0].ravel(), X_mesh[1].ravel()), axis=1)
-
-    from phd.models.cm.utils import FieldSaver
-    field_saver = FieldSaver(
-        period=log_every,
-        x_eval=X_plot,
-        results_manager=results_manager,
-        field_names=log_output_fields,
-        save_to_disk=False  # Never save during training, use save_run_data instead
-    )
-    callbacks.append(field_saver)
+    field_saver = None
+    log_fields = list(cfg.problem.log_fields) if cfg.problem.log_fields else ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
+    if log_fields:
+        from phd.models.cm.utils import FieldSaver
+        X_plot = [np.linspace(0, 1, 100).reshape(-1, 1)] * 2 if net_type == "SPINN" else \
+                 np.stack(np.meshgrid(*[np.linspace(0, 1, 100, dtype=np.float32)]*2, indexing="ij"), axis=-1).reshape(-1, 2)
+        field_saver = FieldSaver(
+            period=log_every, x_eval=X_plot, results_manager=results_manager,
+            field_names=log_fields, save_to_disk=False,
+            output_field_fn=make_output_field_fn(net_type, formulation, lmbd, mu),
+        )
+        callbacks.append(field_saver)
 
     # Compile and Train
     model.compile(
-        "adam", 
+        "adam",
         lr=lr, 
         decay=lr_decay,
         metrics=["l2 relative error"], 
@@ -467,12 +539,12 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
     its_per_sec = n_iter / elapsed if elapsed > 0 and n_iter > 0 else 0
 
     # Evaluation
-    eval_results = eval(cfg, model)
+    # eval_results = eval(cfg, model)
     
     # Print summary
-    if n_iter > 0:
-        print(f"L2 relative error: {eval_results['l2_error']:.3e}")
-        print(f"Elapsed training time: {elapsed:.2f} s, {its_per_sec:.2f} it/s")
+    # if n_iter > 0:
+    #     print(f"L2 relative error: {eval_results['l2_error']:.3e}")
+    #     print(f"Elapsed training time: {elapsed:.2f} s, {its_per_sec:.2f} it/s")
 
     # Store config as dict for results
     config_dict = OmegaConf.to_container(cfg, resolve=True)
@@ -484,7 +556,7 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
         "run_dir": str(results_manager.run_dir),
         "elapsed_time": elapsed,
         "iterations_per_sec": its_per_sec,
-        "evaluation": eval_results,
+        # "evaluation": eval_results,
         "field_saver": field_saver, # For accessing logged fields (Ux, Uy, Sxx, Syy, Sxy over time)
         "variable_value_callback": variable_value_callback, # For accessing logged material params over time
         "variable_array_callback": variable_array_callback, # For accessing logged SA weights over time

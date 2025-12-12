@@ -1,1 +1,1 @@
-from .analytical_plate import train, DEFAULT_CONFIG
+from .analytical_plate import train

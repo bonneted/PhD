@@ -193,10 +193,10 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None) ->
 
     if net_type == "PINN":
         data = dde.data.TimePDE(geomtime, pde_fn, [], num_domain=num_domain,
-                                num_boundary=0, num_initial=0, solution=solution_fn, num_test=10000)
+                                num_boundary=0, num_initial=0, solution=solution_fn)
     else:
         data = dde.data.PDE(geomtime, pde_fn, [], num_domain=num_domain,
-                           num_boundary=0, is_SPINN=True, solution=solution_fn, num_test=10000)
+                           num_boundary=0, is_SPINN=True, solution=solution_fn)
 
     # Network
     if net_type == "SPINN":
