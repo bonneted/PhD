@@ -199,14 +199,16 @@ def log_training_results(results: Dict[str, Any], log_history: bool = True):
     import wandb
     import numpy as np
     
+    #TODO: use correct metrics (evvalutaion deprecated)
     losshistory = results.get('losshistory')
     evaluation = results.get('evaluation', {})
     config = results.get('config', {})
     
     # === Final Summary Metrics ===
+    runtime_metrics = results.get('runtime_metrics', {})
     summary = {
-        "elapsed_time_s": results.get('elapsed_time', 0),
-        "iterations_per_sec": results.get('iterations_per_sec', 0),
+        "elapsed_time_s": runtime_metrics.get('elapsed_time', 0),
+        "iterations_per_sec": runtime_metrics.get('iterations_per_sec', 0),
         "l2_error": evaluation.get('l2_error', evaluation.get('l2_relative_error')),
     }
     
@@ -223,7 +225,7 @@ def log_training_results(results: Dict[str, Any], log_history: bool = True):
             summary["final_loss_test"] = float(np.sum(losshistory.loss_test[-1]))
     
     # Parameter values (for inverse problems)
-    variable_callback = results.get('variable_value_callback')
+    variable_callback = results.get('callbacks', {}).get('variable_value')
     if variable_callback is not None and hasattr(variable_callback, 'value_history'):
         final_values = {name: vals[-1] for name, vals in variable_callback.value_history.items()}
         summary.update({f"final_{k}": v for k, v in final_values.items()})

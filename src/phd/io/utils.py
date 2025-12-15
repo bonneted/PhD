@@ -580,8 +580,9 @@ def _save_run_metadata(results, rm):
     run_data = {
         "config": OmegaConf.to_container(results.get("config", {}), resolve=True),
         "run_metrics": {
-            "elapsed_time": results.get("elapsed_time"),
-            "iterations_per_sec": results.get("iterations_per_sec"),
+            "elapsed_time": results.get("runtime_metrics", {}).get("elapsed_time"),
+            "iterations_per_sec": results.get("runtime_metrics", {}).get("iterations_per_sec"),
+            "net_params_count": results.get("runtime_metrics", {}).get("net_params_count"),
             "run_dir": results.get("run_dir"),
         },
     }
@@ -619,7 +620,7 @@ def _save_model_params(results, rm):
 
 def _save_variable_history(results, rm):
     """Save trainable variable history (for inverse problems)."""
-    cb = results.get("variable_value_callback")
+    cb = results.get("callbacks", {}).get("variable_value")
     if cb is None or not cb.history:
         return
     
@@ -647,7 +648,7 @@ def _save_variable_history(results, rm):
 
 def _save_variable_arrays(results, rm):
     """Save SA weight arrays if they exist."""
-    cb = results.get("variable_array_callback")
+    cb = results.get("callbacks", {}).get("variable_array")
     if cb is None or not cb.history:
         return
     
@@ -657,7 +658,7 @@ def _save_variable_arrays(results, rm):
 
 def _save_field_snapshots(results, rm):
     """Save field snapshots to disk."""
-    saver = results.get("field_saver")
+    saver = results.get("callbacks", {}).get("field_saver")
     if saver is None or not saver.history:
         return
     
@@ -715,14 +716,19 @@ def load_run(run_name, problem, base_dir=None, restore_model=False, train_fn=Non
         "run_metrics": run_metrics,
         "losshistory": losshistory,
         "run_dir": str(run_dir),
-        "elapsed_time": run_metrics.get("elapsed_time"),
-        "iterations_per_sec": run_metrics.get("iterations_per_sec"),
-        "field_saver": field_saver,
-        "variable_value_callback": variable_value_callback,
+        "runtime_metrics": {
+            "elapsed_time": run_metrics.get("elapsed_time"),
+            "iterations_per_sec": run_metrics.get("iterations_per_sec"),
+            "net_params_count": run_metrics.get("net_params_count"),
+        },
+        "callbacks": {
+            "field_saver": field_saver,
+            "variable_value": variable_value_callback,
+            "variable_array": None,
+        },
         "model_params": model_params,
         "external_vars": external_vars,
         "model": None,
-        "variable_array_callback": None,
     }
     
     # Optionally restore the model
