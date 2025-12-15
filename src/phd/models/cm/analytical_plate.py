@@ -419,45 +419,45 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
     )
 
     # Variable logging callbacks
-    variable_value_callback = None
-    variable_array_callback = None
+    material_parameter_logger = None
+    attention_weight_logger = None
     
     if task == "inverse":
-        variable_value_callback = VariableValue(
+        material_parameter_logger = VariableValue(
             [lmbd_trainable, mu_trainable], 
             period=log_every, 
             filename=None,  # Never save during training, use save_run_data instead
             precision=4,
             scale_factors=variables_training_factor  # This scaling takes normalization into account
         )
-        callbacks.append(variable_value_callback)
+        callbacks.append(material_parameter_logger)
     
     if sa_enabled:
         # Set up SA weight logging
         sa_var_dict = {"pde_weights": sa_pde_weight}
         if not sa_share_weights:
             sa_var_dict["mat_weights"] = sa_mat_weight
-        variable_array_callback = VariableArray(
+        attention_weight_logger = VariableArray(
             sa_var_dict,
             period=log_every,
             results_manager=results_manager,
             save_to_disk=False  # Never save during training, use save_run_data instead
         )
-        callbacks.append(variable_array_callback)
+        callbacks.append(attention_weight_logger)
 
     # Field Logging
-    field_saver = None
+    fields_logger = None
     log_fields = list(cfg.problem.log_fields) if cfg.problem.log_fields else ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
     if log_fields:
         from phd.models.cm.utils import FieldSaver
         X_plot = [np.linspace(0, 1, 100).reshape(-1, 1)] * 2 if net_type == "SPINN" else \
                  np.stack(np.meshgrid(*[np.linspace(0, 1, 100, dtype=np.float32)]*2, indexing="ij"), axis=-1).reshape(-1, 2)
-        field_saver = FieldSaver(
+        fields_logger = FieldSaver(
             period=log_every, x_eval=X_plot, results_manager=results_manager,
             field_names=log_fields, save_to_disk=False,
             output_field_fn=make_output_field_fn(net_type, formulation, lmbd, mu),
         )
-        callbacks.append(field_saver)
+        callbacks.append(fields_logger)
 
     # Compile and Train
     model.compile(
@@ -472,17 +472,25 @@ def train(cfg: DictConfig = None, overrides: Optional[list] = None):
     losshistory, train_state = model.train(iterations=n_iter, callbacks=callbacks, display_every=log_every)
     elapsed = time.time() - start_time
     its_per_sec = n_iter / elapsed if elapsed > 0 and n_iter > 0 else 0
+    count_params = lambda net: sum(jax.tree_util.tree_leaves(jax.tree_util.tree_map(lambda x: x.size, net.params)))
+    net_params_count = count_params(net)
+
 
     results = {
         "model": model,
         "losshistory": losshistory,
         "config": cfg,
         "run_dir": str(results_manager.run_dir),
-        "elapsed_time": elapsed,
-        "iterations_per_sec": its_per_sec,
-        "field_saver": field_saver, # For accessing logged fields (Ux, Uy, Sxx, Syy, Sxy over time)
-        "variable_value_callback": variable_value_callback, # For accessing logged material params over time
-        "variable_array_callback": variable_array_callback, # For accessing logged SA weights over time
+        "runtime_metrics": {
+            "elapsed_time": elapsed,
+            "iterations_per_sec": its_per_sec,
+            "net_params_count": net_params_count,
+        },
+        "callbacks": {
+            "field_saver": fields_logger, # For accessing logged fields (Ux, Uy, Sxx, Syy, Sxy over time)
+            "variable_value": material_parameter_logger, # For accessing logged material params over time
+            "variable_array": attention_weight_logger, # For accessing logged SA weights over time
+        }
     }
 
     # Save all data to disk if requested
