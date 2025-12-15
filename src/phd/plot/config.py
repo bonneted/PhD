@@ -3,6 +3,7 @@ Plotting configuration for thesis visualizations.
 Centralized settings for figure scaling, font sizes, and matplotlib parameters.
 """
 
+import matplotlib as mpl        
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
@@ -78,9 +79,9 @@ class PlottingConfig:
         
         Args:
             page_width_mm: Page width in millimeters (default 120mm)
-            title_font_size: Title font size (default 7)
-            axes_font_size: Axes font size (default 5)
-            min_font_size: Minimum font size for ticks (default 4)
+            title_font_size: Title font size (default 8)
+            axes_font_size: Axes font size (default 6)
+            min_font_size: Minimum font size used (default 5)
         """
         self.page_width_mm = page_width_mm
         self.title_font_size = title_font_size
@@ -90,8 +91,14 @@ class PlottingConfig:
         # Convert mm to inches
         self.page_width = self._mm_to_inches(page_width_mm)
         
-        # Calculate scale factor based on page width (reference: 120mm)
-        self.scale = page_width_mm / 120.0
+        # Calculate scale factor based on page width 
+        
+        # Get default figure width in inches from matplotlib
+        default_width = mpl.rcParamsDefault.get("figure.figsize", [6.4, 4.8])[0]
+
+        # We scale so the fig looks good using 1/4 of the page width 
+        self.scale = self.page_width / default_width * 0.5
+
     
     @staticmethod
     def _mm_to_inches(mm):
@@ -111,17 +118,12 @@ class PlottingConfig:
     
     def apply_figure_scale(self):
         """Apply figure scaling to matplotlib based on page width, scaled from defaults."""
-        import matplotlib as mpl
-        
+
         # Get default values
         defaults = mpl.rcParamsDefault
-        
-        # Scale based on figure size
-        fig_width = plt.rcParams.get("figure.figsize", [6.4, 4.8])[0]
-        s = self.page_width / fig_width
-        s = s * 0.25  # personal preference scaling
-        
+       
         # Scale each parameter from its default
+        s = self.scale 
         plt.rcParams.update({
             "lines.linewidth": defaults['lines.linewidth'] * s,
             "lines.markersize": defaults['lines.markersize'] * s,
@@ -150,7 +152,7 @@ class PlottingConfig:
     def __repr__(self):
         return (f"PlottingConfig(page_width={self.page_width_mm}mm, "
                 f"scale={self.scale:.2f}, title_fs={self.title_font_size}, "
-                f"axes_fs={self.axes_font_size})")
+                f"axes_fs={self.axes_font_size}), min_fs={self.min_font_size})")
 
 
 def set_current_config(config):
