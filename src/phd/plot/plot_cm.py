@@ -21,6 +21,7 @@ from phd.plot.plot_util import (
     add_colorbar,
     init_figure,
     subsample_frames,
+    plot_comparison,
 )
 
 # LaTeX names for CM fields
@@ -40,7 +41,7 @@ def compute_metrics_from_history(losshistory, config):
         - Inverse: [pde_x, pde_y, mat_x, mat_y, mat_xy, DIC_x, DIC_y]
     - Displacement formulation:
         - Forward: [pde_x, pde_y, bc_stress_top, bc_stress_left, bc_stress_right]
-        - Inverse: [pde_x, pde_y, mat_x, mat_y, DIC_x, DIC_y]
+        - Inverse: [pde_x, pde_y, bc_stress_top, bc_stress_left, bc_stress_right, DIC_x, DIC_y]
     metrics_test contains the L2 relative error separately.
     
     Returns:
@@ -49,7 +50,6 @@ def compute_metrics_from_history(losshistory, config):
     steps = np.array(losshistory.steps)
     loss_train = np.array([np.array(l) for l in losshistory.loss_train])
     metrics_test = np.array(losshistory.metrics_test).squeeze()
-    n_cols = loss_train.shape[1]
 
     if config.model.formulation == "displacement":
         BC_loss = np.mean(loss_train[:, 2:], axis=1)
@@ -57,7 +57,7 @@ def compute_metrics_from_history(losshistory, config):
     else:
         mat_loss = np.mean(loss_train[:, 2:5], axis=1)
         BC_loss = None
-    
+        
     metrics = {
         "steps": steps,
         "L2 Error": metrics_test,
@@ -67,7 +67,7 @@ def compute_metrics_from_history(losshistory, config):
         "Total Loss": np.mean(loss_train, axis=1),
     }
     
-    if n_cols == 7:  # Inverse problem with DIC
+    if config.task.type == "inverse":
         metrics["DIC Loss"] = np.mean(loss_train[:, 5:7], axis=1)
     
     return metrics
@@ -97,7 +97,7 @@ def process_results(results, exact_solution_fn, plot_fields=None):
     
     # Get field data and steps from field_saver
     fields_dict = {}
-    field_saver = results.get("field_saver")
+    field_saver = results.get("callbacks", {}).get("field_saver")
     if field_saver and field_saver.history:
         steps = np.array([h[0] for h in field_saver.history])
         first_snapshot = field_saver.history[0][1]
@@ -108,7 +108,7 @@ def process_results(results, exact_solution_fn, plot_fields=None):
     
     # Get variable history
     vars_history = {}
-    var_cb = results.get("variable_value_callback")
+    var_cb = results.get("callbacks", {}).get("variable_value")
     if var_cb and var_cb.history:
         var_hist = np.array(var_cb.history)
         if var_hist.ndim == 1: 
@@ -178,7 +178,7 @@ def init_plot(results, exact_solution_fn, iteration=-1, **opts):
     """
     o = {"fields": None, "show_metrics": True, "show_residual": True, "dpi": 100, 
          "metrics": ["L2 Error"], "step_type": "iteration", "time_unit": "min",
-         "show_iter": False, **opts}
+         "show_iter": False, "plot_contours": False, **opts}
     
     steps, metrics, vars_history, fields_init, get_snapshot_fn, (mx, my), config, fields_dict = process_results(
         results, exact_solution_fn, plot_fields=o["fields"]
@@ -187,7 +187,7 @@ def init_plot(results, exact_solution_fn, iteration=-1, **opts):
     # Convert steps to time if requested
     step_type = o["step_type"]
     time_unit = o["time_unit"]
-    elapsed_time = results.get("elapsed_time", None)
+    elapsed_time = results.get("runtime_metrics", {}).get("elapsed_time", None)
     if step_type == "time" and elapsed_time is not None:
         # Convert iteration steps to time
         time_scale = elapsed_time / steps[-1] if steps[-1] > 0 else 1.0
@@ -267,11 +267,11 @@ def init_plot(results, exact_solution_fn, iteration=-1, **opts):
         title_pred = title[:-1] + "^*$" if title.endswith("$") else title + "*"
         
         # Row 0: Reference
-        art_ref = plot_field(ax[0, col], mx, my, data_list[0], title=title, cmap="viridis")
+        art_ref = plot_field(ax[0, col], mx, my, data_list[0], title=title, cmap="viridis", plot_contours=o["plot_contours"])
         add_colorbar(fig, ax[0, col], art_ref["im"], location="top", shift=0.05)
         
         # Row 1: Prediction
-        art_pred = plot_field(ax[1, col], mx, my, data_list[1], title=title_pred, cmap="viridis", vmin=art_ref["im"].get_clim()[0], vmax=art_ref["im"].get_clim()[1])
+        art_pred = plot_field(ax[1, col], mx, my, data_list[1], title=title_pred, cmap="viridis", vmin=art_ref["im"].get_clim()[0], vmax=art_ref["im"].get_clim()[1], plot_contours=o["plot_contours"])
         
         # Row 2: Error (if enabled)
         art_err = None
@@ -412,8 +412,8 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
     """
     from pathlib import Path
     
-    o = {"dpi": 100, "metrics": ["Residual"], "step_type": "iteration", 
-         "time_unit": "min", "show_iter": False, **opts}
+    o = {"dpi": 100, "metrics": ["L2 Error"], "step_type": "iteration", 
+         "time_unit": "min", "show_iter": False, "plot_contours": True, **opts}
     
     # Process both results
     steps1, metrics1, _, fields_init1, get_snapshot_fn1, (mx, my), config1, _ = process_results(
@@ -426,8 +426,8 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
     # Handle time synchronization between runs
     step_type = o["step_type"]
     time_unit = o["time_unit"]
-    elapsed1 = results1.get("elapsed_time", None)
-    elapsed2 = results2.get("elapsed_time", None)
+    elapsed1 = results1.get("runtime_metrics", {}).get("elapsed_time", None)
+    elapsed2 = results2.get("runtime_metrics", {}).get("elapsed_time", None)
     
     # Determine which run is slower (use as base for animation)
     # time_ratios[i] = ratio to convert base frame_idx to run i's frame_idx
@@ -492,7 +492,7 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
     
     # --- Column 0: Exact field (top) and Metrics (bottom) ---
     # Top: Exact solution
-    art_exact = plot_field(ax[0, 0], mx, my, exact_data, title=field_title, cmap="viridis")
+    art_exact = plot_field(ax[0, 0], mx, my, exact_data, title=field_title, cmap="viridis", plot_contours=o["plot_contours"])
     
     # Bottom: Metrics comparison (both runs overlaid)
     ax_metrics = ax[1, 0]
@@ -529,9 +529,9 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
     
     # Add metric name as title
     if len(o["metrics"]) == 1:
-        latex_names = {"Residual": r"$E_{L_2}$", "Total Loss": r"$\mathcal{L}$"}
+        latex_names = {"L2 Error": r"$E_{L_2}$", "Total Loss": r"$\mathcal{L}$"}
         ax_metrics.set_title(latex_names.get(o["metrics"][0], o["metrics"][0]))
-    ax_metrics.legend(handlelength=1).get_frame().set_linewidth(0.5)
+    ax_metrics.legend(fontsize=get_current_config().min_font_size, handlelength=1).get_frame().set_linewidth(get_current_config().scale)
     
     # Update metrics to current step
     update_metrics(current_step, metrics_artists)
@@ -555,7 +555,7 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
         
         # Top: Prediction with run name as title
         art_pred = plot_field(ax[0, col], mx, my, pred_data, 
-                              title=f"{name}", cmap="viridis", vmin=vmin, vmax=vmax)
+                              title=f"{name}", cmap="viridis", vmin=vmin, vmax=vmax, plot_contours=o["plot_contours"])
         
         # Bottom: Error (shared color scale)
         title_err = rf"${field_title[1:-1]} - {field_title_pred[1:-1]}$"
@@ -645,3 +645,62 @@ def animate(fig, artists, output_file, fps=10, frame_indices=None, preview=False
     
     print(f"Animation saved to {output_file} ({n_frames} frames, {duration:.1f}s)")
     return anim
+
+
+def plot_metrics_comparison(results_dict, metric_name="L2 Error", run_names=None, 
+                          step_type="iteration", time_unit="s", save_path=None):
+    """
+    Compare a specific metric across multiple runs.
+    
+    Args:
+        results_dict: dict of run_name -> results
+        metric_name: name of metric to plot (default "L2 Error")
+        run_names: optional list of names to use in legend (matching keys order)
+        step_type: "iteration" or "time"
+        time_unit: "s" or "min" (only if step_type="time")
+        save_path: optional path to save the figure
+    """
+    data_dict = {}
+    
+    for i, (key, res) in enumerate(results_dict.items()):
+        if "losshistory" not in res:
+            continue
+            
+        # Compute metrics
+        metrics = compute_metrics_from_history(res["losshistory"], res["config"])
+        steps = metrics["steps"]
+        values = metrics.get(metric_name)
+        
+        if values is None:
+            print(f"Metric {metric_name} not found in {key}")
+            continue
+            
+        # Handle time x-axis
+        if step_type == "time":
+            elapsed = res.get("runtime_metrics", {}).get("elapsed_time")
+            if elapsed is None: elapsed = res.get("elapsed_time", 1.0) # Fallback
+            
+            # Scale steps to time
+            time_scale = elapsed / steps[-1] if steps[-1] > 0 else 1.0
+            if time_unit == "min":
+                time_scale /= 60
+            steps = steps * time_scale
+            
+        label = run_names[i] if run_names and i < len(run_names) else key
+        data_dict[label] = (steps, values)
+    
+    # Determine labels
+    xlabel = "Iterations"
+    if step_type == "time":
+        xlabel = f"Time ({time_unit})"
+        
+    DEFAULT_LATEX_NAMES = {
+        "L2 Error": r"$E_{L_2}$",
+        "PDE Loss": r"$\mathcal{L}_{\text{PDE}}$",
+        "Material Loss": r"$\mathcal{L}_{\text{mat}}$",
+        "Total Loss": r"$\mathcal{L}_{\text{total}}$",
+    }
+    ylabel = DEFAULT_LATEX_NAMES.get(metric_name, metric_name)
+    
+    return plot_comparison(data_dict, xlabel=xlabel, ylabel=ylabel, 
+                         yscale='log', save_path=save_path)

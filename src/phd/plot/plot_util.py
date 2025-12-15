@@ -110,7 +110,7 @@ def init_metrics(ax, steps, metrics_dict, selected_metrics=None, xlabel=None,
         artists[name] = {"line": line, "scatter": scatter, "data": data, "steps": steps, "name_str": name_str}
     
     if num_metrics > 1 or not use_title:
-        ax.legend(handlelength=1).get_frame().set_linewidth(0.5)
+        ax.legend(handlelength=0.5).get_frame().set_linewidth(0.5)
     elif num_metrics == 1 and use_title:
         name_str = latex_map.get(metric_items[0][0], metric_items[0][0]) if use_latex_names else metric_items[0][0]
         ax.set_title(name_str)
@@ -175,7 +175,7 @@ def init_parameter_evolution(ax, steps, history, true_val=None, label="Param",
             xlabel = "Time (min)" if step_type == "time" and time_unit == "min" else \
                      "Time (s)" if step_type == "time" else "Iterations"
         ax.set_xlabel(xlabel)
-    ax.legend(handlelength=1).get_frame().set_linewidth(0.5)
+    ax.legend(handlelength=0.5).get_frame().set_linewidth(0.1)
     
     return {"line": line, "scatter": scatter, "data": history, "steps": steps, "label": label}
 
@@ -199,7 +199,7 @@ def update_parameter_evolution(current_step, artist):
     
     # Update legend
     ax = artist["scatter"].axes
-    ax.legend(handlelength=1).get_frame().set_linewidth(0.5)
+    ax.legend(handlelength=0.5).get_frame().set_linewidth(0.5)
 
 
 def plot_field(ax, X, Y, data, title=None, cmap='viridis', plot_contours=False, vmin=None, vmax=None):
@@ -330,3 +330,50 @@ def subsample_frames(n_frames, factors=None):
         frame_indices.append(n_frames - 1)
     
     return frame_indices
+
+
+def plot_comparison(data_dict, xlabel=None, ylabel=None, 
+                   yscale='log', save_path=None, figsize=None, dpi=200,
+                   colors=None):
+    """
+    Static plot comparing multiple series.
+    
+    Args:
+        data_dict: dict mapping label -> (x_values, y_values)
+        xlabel: label for x-axis
+        ylabel: label for y-axis
+        yscale: 'log' or 'linear'
+        save_path: path to save figure
+        figsize: tuple (width, height)
+        dpi: resolution
+        colors: list of colors to cycle through (default: KUL_CYCLE)
+    """
+    if figsize is None:
+        figsize = (get_current_config().page_width * 0.5, get_current_config().page_width * 0.35)
+        
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    
+    if colors is None:
+        colors = KUL_CYCLE
+        
+    for i, (label, (x, y)) in enumerate(data_dict.items()):
+        c = colors[i % len(colors)]
+        ax.plot(x, y, label=label, color=c)
+        
+    if yscale:
+        ax.set_yscale(yscale)
+        
+    if xlabel:
+        ax.set_xlabel(xlabel)
+    if ylabel:
+        ax.set_ylabel(ylabel)
+        
+    leg = ax.legend(handlelength=0.8, fontsize=get_current_config().min_font_size)
+    leg.get_frame().set_linewidth(get_current_config().scale)
+    for line in leg.get_lines():
+        line.set_linewidth(1.5)
+        
+    if save_path:
+        fig.savefig(save_path, bbox_inches='tight')
+        
+    return fig, ax
