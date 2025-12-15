@@ -21,6 +21,7 @@ from .utils import (
     load_fields,
     load_field,
     create_interpolation_fn,
+    save_df_to_latex,
 )
 
 from .wandb_utils import (
@@ -55,4 +56,6 @@ __all__ = [
     "get_sweep_commands",
     "log_training_results",
     "wandb_train_wrapper",
+    # LaTeX export
+    "save_df_to_latex",
 ]

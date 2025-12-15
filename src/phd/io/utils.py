@@ -1119,3 +1119,62 @@ def get_dataset_path(filename):
         raise FileNotFoundError(f"Dataset '{filename}' not found in {dataset_dir}")
     
     return filepath
+
+
+# =============================================================================
+# LaTeX Table Export
+# =============================================================================
+
+def save_df_to_latex(df, filepath, formatters=None, index=False, escape=True, **kwargs):
+    """
+    Save a DataFrame to a LaTeX file using booktabs format.
+    
+    Creates a clean tabular environment (no caption/label) suitable for 
+    inclusion in a LaTeX document with \\input{table.tex}.
+    
+    Args:
+        df: pandas DataFrame to save
+        filepath: Path to save the .tex file (str or Path)
+        formatters: Dict mapping column names to format strings or functions.
+                    Format strings like "{:.2e}" are converted to functions.
+                    Example: {"L2 Error": "{:.2e}", "Runtime [min]": "{:.2f}"}
+        index: Whether to include the DataFrame index (default: False)
+        escape: Whether to escape LaTeX special characters (default: True)
+        **kwargs: Additional arguments passed to DataFrame.to_latex()
+    
+    Example:
+        formatters = {
+            "L2 Error": "{:.2e}",
+            "Runtime [min]": "{:.2f}",
+            "# Params": "{:.0f}",
+        }
+        save_df_to_latex(df, "tables/results.tex", formatters=formatters)
+    """
+    filepath = Path(filepath)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Convert format strings to formatter functions
+    if formatters is not None:
+        processed_formatters = {}
+        for col, fmt in formatters.items():
+            if col not in df.columns:
+                continue
+            if isinstance(fmt, str):
+                processed_formatters[col] = fmt.format
+            else:
+                processed_formatters[col] = fmt
+        formatters = processed_formatters
+    
+    # Generate LaTeX with booktabs (default in pandas)
+    latex_str = df.to_latex(
+        index=index,
+        formatters=formatters,
+        escape=escape,
+        **kwargs
+    )
+    
+    # Write to file
+    with open(filepath, "w") as f:
+        f.write(latex_str)
+    
+    print(f"Saved LaTeX table to {filepath}")
