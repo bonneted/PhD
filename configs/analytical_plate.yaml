@@ -27,8 +27,8 @@ model:
   
   architecture:
     n_hidden: 3
-    width: 20
-    rank: 64
+    width: 32
+    rank: 128
     activations: tanh
     initialization: "Glorot normal"
     mlp_type: mlp
@@ -40,7 +40,7 @@ model:
 
 # --- Training Settings ---
 training:
-  n_iter: 50000
+  n_iter: 60000
   lr: 1.0e-3
   num_domain: 10000  # 100^2 collocation points
   bc_type: hard
@@ -60,9 +60,16 @@ training:
 task:
   type: forward  # forward or inverse
   # For inverse problems:
-  inverse_params:
-    - lmbd
-    - mu
+  inverse:
+    init_guess:
+      lmbd: 2.0
+      mu: 1.0
+    training_factors:
+      lmbd: 1.0
+      mu: 1.0
+    normalize_parameters: true
+    n_observations: 10  # Num total = n_observations^2
+    noise_ratio: 0.0  # Add noise to observations
 
 # --- Results ---
 results:
