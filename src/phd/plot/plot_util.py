@@ -162,7 +162,7 @@ def init_parameter_evolution(ax, steps, history, true_val=None, label="Param",
         dict of artists for animation updates
     """
     if true_val is not None:
-        ax.axhline(y=true_val, linestyle='--', color=color, alpha=0.5)
+        ax.axhline(y=true_val, linestyle='--', color=color)
     
     ax.plot(steps, history, alpha=0.2, color=color)
     line, = ax.plot([], [], color=color, zorder=3)
@@ -334,7 +334,7 @@ def subsample_frames(n_frames, factors=None):
 
 def plot_comparison(data_dict, xlabel=None, ylabel=None, 
                    yscale='log', save_path=None, figsize=None, dpi=200,
-                   colors=None):
+                   colors=None, fig=None, ax=None):
     """
     Static plot comparing multiple series.
     
@@ -347,11 +347,15 @@ def plot_comparison(data_dict, xlabel=None, ylabel=None,
         figsize: tuple (width, height)
         dpi: resolution
         colors: list of colors to cycle through (default: KUL_CYCLE)
+        fig: existing figure (optional)
+        ax: existing axis (optional)
     """
-    if figsize is None:
-        figsize = (get_current_config().page_width * 0.5, get_current_config().page_width * 0.35)
-        
-    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    if ax is None:
+        if figsize is None:
+            figsize = (get_current_config().page_width * 0.5, get_current_config().page_width * 0.35)
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    elif fig is None:
+        fig = ax.get_figure()
     
     if colors is None:
         colors = KUL_CYCLE

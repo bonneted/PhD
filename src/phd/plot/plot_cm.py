@@ -233,7 +233,8 @@ def init_plot(results, exact_solution_fn, iteration=-1, **opts):
         get_hist = lambda name: (vars_history[name]["steps"], vars_history[name]["values"]) if name in vars_history else (steps, np.zeros_like(steps))
         
         has_variables = False
-        for row, (var, true_val, lbl, clr) in enumerate([("lambda", lmbd_true, r"$\lambda$", 'b'), ("mu", mu_true, r"$\mu$", 'r')]):
+        var_colors = KUL_CYCLE[1:3]
+        for row, (var, true_val, lbl, clr) in enumerate([("lambda", lmbd_true, r"$\lambda$", var_colors[0]), ("mu", mu_true, r"$\mu$", var_colors[1])]):
             ax_var = ax[row, 0]
             ax_var.set_box_aspect(1)  # Square aspect ratio
             if var not in vars_history:
@@ -648,31 +649,52 @@ def animate(fig, artists, output_file, fps=10, frame_indices=None, preview=False
 
 
 def plot_metrics_comparison(results_dict, metric_name="L2 Error", run_names=None, 
-                          step_type="iteration", time_unit="s", save_path=None):
+                          step_type="iteration", time_unit="s", save_path=None,
+                          fig=None, ax=None, yscale=None, ylabel=None):
     """
-    Compare a specific metric across multiple runs.
+    Compare a specific metric or variable across multiple runs.
     
     Args:
         results_dict: dict of run_name -> results
-        metric_name: name of metric to plot (default "L2 Error")
+        metric_name: name of metric ("L2 Error", "PDE Loss"...) or variable ("lambda", "mu")
         run_names: optional list of names to use in legend (matching keys order)
         step_type: "iteration" or "time"
         time_unit: "s" or "min" (only if step_type="time")
         save_path: optional path to save the figure
+        fig: existing figure (optional)
+        ax: existing axis (optional)
+        yscale: 'log', 'linear', or None (auto-select based on metric)
     """
     data_dict = {}
+    is_variable = metric_name.lower() in ["lambda", "lmbd", "mu"]
+    
+    # Set default yscale if not provided
+    if yscale is None:
+        yscale = 'linear' if is_variable else 'log'
     
     for i, (key, res) in enumerate(results_dict.items()):
-        if "losshistory" not in res:
-            continue
-            
-        # Compute metrics
-        metrics = compute_metrics_from_history(res["losshistory"], res["config"])
-        steps = metrics["steps"]
-        values = metrics.get(metric_name)
+        steps = None
+        values = None
+        
+        if is_variable:
+            # Extract variable history
+            var_cb = res.get("callbacks", {}).get("variable_value")
+            if var_cb and var_cb.history:
+                var_hist = np.array(var_cb.history)
+                steps = var_hist[:, 0]
+                # Index 1 is lambda, 2 is mu (assuming standard callback structure)
+                idx = 1 if metric_name.lower() in ["lambda", "lmbd"] else 2
+                if var_hist.shape[1] > idx:
+                    values = var_hist[:, idx]
+        else:
+            # Extract metric from loss history
+            if "losshistory" in res:
+                metrics = compute_metrics_from_history(res["losshistory"], res["config"])
+                steps = metrics["steps"]
+                values = metrics.get(metric_name)
         
         if values is None:
-            print(f"Metric {metric_name} not found in {key}")
+            # print(f"Metric/Variable {metric_name} not found in {key}")
             continue
             
         # Handle time x-axis
@@ -681,7 +703,7 @@ def plot_metrics_comparison(results_dict, metric_name="L2 Error", run_names=None
             if elapsed is None: elapsed = res.get("elapsed_time", 1.0) # Fallback
             
             # Scale steps to time
-            time_scale = elapsed / steps[-1] if steps[-1] > 0 else 1.0
+            time_scale = elapsed / steps[-1] if len(steps) > 0 and steps[-1] > 0 else 1.0
             if time_unit == "min":
                 time_scale /= 60
             steps = steps * time_scale
@@ -699,8 +721,12 @@ def plot_metrics_comparison(results_dict, metric_name="L2 Error", run_names=None
         "PDE Loss": r"$\mathcal{L}_{\text{PDE}}$",
         "Material Loss": r"$\mathcal{L}_{\text{mat}}$",
         "Total Loss": r"$\mathcal{L}_{\text{total}}$",
+        "lambda": r"$\lambda$",
+        "lmbd": r"$\lambda$",
+        "mu": r"$\mu$",
     }
-    ylabel = DEFAULT_LATEX_NAMES.get(metric_name, metric_name)
+    if ylabel is None:
+        ylabel = DEFAULT_LATEX_NAMES.get(metric_name, metric_name) 
     
     return plot_comparison(data_dict, xlabel=xlabel, ylabel=ylabel, 
-                         yscale='log', save_path=save_path)
+                         yscale=yscale, save_path=save_path, fig=fig, ax=ax)

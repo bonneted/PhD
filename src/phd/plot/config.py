@@ -46,8 +46,8 @@ KUL_CYCLE = [
     KUL_COLORS['accent7'],          # Coral/Red
     KUL_COLORS['accent3'],          # Olive/Green
     KUL_COLORS['accent2'],          # Gold
-    KUL_COLORS['accent1'],          # Teal
-    KUL_COLORS['accent12'],         # Orange
+    KUL_COLORS['accent6'],          # Tan/Brown
+    KUL_COLORS['tertiarydarkblue'], # Dark blue
     KUL_COLORS['accent9'],          # Mauve
     KUL_COLORS['tertiaryblue'],     # Dark blue
     KUL_COLORS['accent8'],          # Mustard
@@ -69,6 +69,11 @@ def apply_kul_colors():
     # plt.rcParams['text.color'] = mcolors.rgb2hex(KUL_COLORS['tertiarydarkblue'])
     plt.rcParams['axes.labelcolor'] = mcolors.rgb2hex(KUL_COLORS['tertiarydarkblue'])
 
+def print_kul_colors():
+    """Print the KU Leuven color palette."""
+    for name, rgb in KUL_COLORS.items():
+        hex_color = mcolors.rgb2hex(rgb)
+        print(f"{name}: RGB={rgb}, HEX={hex_color}")
 
 class PlottingConfig:
     """Configuration class for figure and font settings."""
