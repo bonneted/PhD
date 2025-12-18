@@ -288,6 +288,66 @@ def load_fields(run_dir):
     return _load_fields(Path(run_dir) / "fields")
 
 
+def extract_fields_at_iterations(results, iterations, field_names=None):
+    """
+    Extract field data at specific iterations from results for use with plot_field_evolution.
+    
+    Args:
+        results: dict returned by train() or load_run() with "fields" key
+        iterations: list of iteration numbers to extract (use -1 for last)
+        field_names: Not used for Allen-Cahn (single field "u"), kept for API consistency
+    
+    Returns:
+        dict with keys:
+            "exact": dict mapping "u" -> 2D array
+            "pred": dict mapping "u" -> list of 2D arrays (one per iteration)  
+            "iterations": list of actual iteration numbers used
+            "X", "Y": meshgrid arrays (t, x for Allen-Cahn)
+            
+    Example:
+        >>> data = extract_fields_at_iterations(results, [500, 2500, 50000])
+        >>> fig, ax = plot_field_evolution(data["X"], data["Y"], data["exact"], data["pred"], 
+        ...     data["iterations"], field_titles={"u": r"$u(t,x)$"})
+    """
+    fields_data = results.get("fields", {})
+    if not fields_data:
+        raise ValueError("No fields data found in results. Ensure 'fields' key exists.")
+    
+    # Get available steps
+    available_steps = sorted(fields_data.keys())
+    
+    # Resolve -1 to last iteration
+    resolved_iters = []
+    for it in iterations:
+        if it == -1:
+            resolved_iters.append(available_steps[-1])
+        elif it in available_steps:
+            resolved_iters.append(it)
+        else:
+            # Find closest available step
+            closest = min(available_steps, key=lambda x: abs(x - it))
+            resolved_iters.append(closest)
+    
+    # Get grid from first snapshot
+    first_snapshot = fields_data[available_steps[0]]
+    u_true = first_snapshot["u_true"]
+    
+    # Create meshgrid (Allen-Cahn uses (t, x) convention for plotting)
+    cfg = results.get("config")
+    X_input, xx, tt, _ = test_data(cfg)
+    
+    # Extract predictions at specified iterations
+    pred_list = [fields_data[it]["u_pred"] for it in resolved_iters]
+    
+    return {
+        "exact": {"u": u_true},
+        "pred": {"u": pred_list},
+        "iterations": resolved_iters,
+        "X": tt,  # Time on x-axis
+        "Y": xx,  # Space on y-axis
+    }
+
+
 # =============================================================================
 # Field snapshots
 # =============================================================================

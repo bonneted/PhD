@@ -268,7 +268,7 @@ def add_colorbar(fig, ax, im, location="right", format=None, shift=0.01, size=0.
     current_config = get_current_config()
     min_font_size = current_config.min_font_size
     cb.ax.tick_params(labelsize=min_font_size)
-    if min_font_size < 5: _set_smart_ticks(cb, im.get_clim()[0], im.get_clim()[1])
+    # if min_font_size < 5: _set_smart_ticks(cb, im.get_clim()[0], im.get_clim()[1])
     
     return cb
 
@@ -380,4 +380,223 @@ def plot_comparison(data_dict, xlabel=None, ylabel=None,
     if save_path:
         fig.savefig(save_path, bbox_inches='tight')
         
+    return fig, ax
+
+
+def plot_field_evolution(
+    X, Y, 
+    exact_fields, 
+    pred_fields_at_iters, 
+    iterations, 
+    field_names=None, 
+    field_titles=None,
+    row_labels=None,
+    fig=None,
+    ax=None,
+    figsize=None, 
+    dpi=200, 
+    cmap_field='viridis',
+    cmap_residual='coolwarm',
+    show_l2_error=True,
+    plot_contours=False,
+    powerlimits=(-2, 2),
+    aspect_ratio=1.0,
+    shift_left = -0.025,  # negative shifts leftwards
+
+):
+    """
+    Plot field evolution at different iterations.
+    
+    Layout:
+        - 1st row: Reference field(s) (exact solution)
+        - Following rows: Prediction at each iteration
+        - For each field: Column 1 = field values, Column 2 = residual (pred - exact)
+    
+    Args:
+        X, Y: 2D meshgrid arrays for coordinates
+        exact_fields: dict mapping field_name -> 2D array of exact values
+                      OR single 2D array if field_names has 1 element
+        pred_fields_at_iters: dict mapping field_name -> list of 2D arrays at each iteration
+                              OR list of 2D arrays if field_names has 1 element
+        iterations: list of iteration numbers/labels (for row labels)
+        field_names: list of field names to plot (keys in exact_fields/pred_fields_at_iters)
+                     If None, uses keys from exact_fields dict
+        field_titles: dict mapping field_name -> LaTeX title for display
+                      If None, uses field_names as titles
+        row_labels: list of row labels for iteration rows. 
+                    If None, uses "After {iter} iters" format.
+        fig: existing matplotlib figure (optional). If None, creates new figure.
+        ax: existing 2D array of axes (optional). Must match expected grid size.
+        figsize: (width, height) or None for auto-sizing
+        dpi: figure resolution
+        cmap_field: colormap for field values
+        cmap_residual: colormap for residuals (centered at 0)
+        show_l2_error: whether to show relative L2 error in residual plots
+        plot_contours: whether to add contour lines to field plots
+        powerlimits: power limits for scientific notation in colorbars
+        aspect_ratio: aspect ratio of each plot (height/width, default=1.0 for square)
+    
+    Returns:
+        fig: matplotlib figure
+        ax: 2D array of axes
+        
+    Example (single field):
+        >>> exact = {"u": u_exact}
+        >>> preds = {"u": [u_pred_iter1, u_pred_iter2, u_pred_iter3]}
+        >>> fig, ax = plot_field_evolution(X, Y, exact, preds, [1000, 5000, 10000])
+    
+    Example (multiple fields):
+        >>> exact = {"Ux": ux_exact, "Uy": uy_exact}
+        >>> preds = {"Ux": [ux_1, ux_2], "Uy": [uy_1, uy_2]}
+        >>> fig, ax = plot_field_evolution(X, Y, exact, preds, [1000, 5000],
+        ...     field_titles={"Ux": r"$u_x$", "Uy": r"$u_y$"})
+        
+    Example (passing existing fig/ax):
+        >>> fig, ax = plt.subplots(3, 4, figsize=(10, 8))
+        >>> plot_field_evolution(X, Y, exact, preds, iters, fig=fig, ax=ax)
+    """
+    # Handle single-field case: convert to dict form
+    if field_names is None:
+        if isinstance(exact_fields, dict):
+            field_names = list(exact_fields.keys())
+        else:
+            field_names = ["field"]
+            exact_fields = {"field": exact_fields}
+            pred_fields_at_iters = {"field": pred_fields_at_iters}
+    
+    if field_titles is None:
+        field_titles = {name: name for name in field_names}
+    
+    n_fields = len(field_names)
+    n_iters = len(iterations)
+    n_rows = 1 + n_iters  # Reference row + one row per iteration
+    n_cols = 2 * n_fields  # Field + Residual for each field
+    
+    # Create figure if not provided
+    if fig is None or ax is None:
+        if figsize is None:
+            page_width = get_current_config().page_width
+            fig_width = page_width * min(1.0, n_cols / 4)
+            fig_height = fig_width * (n_rows / n_cols) * aspect_ratio
+            figsize = (fig_width, fig_height)
+        
+        fig, ax = plt.subplots(n_rows, n_cols, figsize=figsize, dpi=dpi)
+    
+    # Ensure ax is 2D array
+    if n_rows == 1 and n_cols == 1: 
+        ax = np.array([[ax]])
+    elif n_rows == 1: 
+        ax = np.array(ax)[np.newaxis, :]
+    elif n_cols == 1: 
+        ax = np.array(ax)[:, np.newaxis]
+    else:
+        ax = np.array(ax)
+    
+    # Default row labels
+    if row_labels is None:
+        row_labels = [f"After {it} iters" for it in iterations]
+    
+    min_font_size = get_current_config().min_font_size
+    fig_width, fig_height = fig.get_size_inches()
+    
+    # Relative colorbar dimensions (similar to Allen-Cahn)
+    cbar_width_rel = 0.033 / fig_width
+    cbar_height_rel = 0.033 / fig_height
+    cbar_offset_x = 0.05 / fig_width
+    cbar_offset_y = 0.1 / fig_height
+    
+    # Create formatter for colorbars
+    formatter = ticker.ScalarFormatter(useMathText=True)
+    formatter.set_scientific(True)
+    formatter.set_powerlimits(powerlimits)
+    
+    # Process each field
+    for f_idx, fname in enumerate(field_names):
+        col_field = 2 * f_idx       # Column for field values
+        col_resid = 2 * f_idx + 1   # Column for residuals
+        
+        exact = exact_fields[fname]
+        preds = pred_fields_at_iters[fname]
+        title = field_titles.get(fname, fname)
+        title_pred = title[:-1] + "^*$" if title.endswith("$") else title + "*"
+        
+        # Determine color limits from exact solution
+        vmin_field = np.nanmin(exact)
+        vmax_field = np.nanmax(exact)
+        
+        # Row 0: Reference (exact solution)
+        art_ref = plot_field(ax[0, col_field], X, Y, exact, title=title, 
+                            cmap=cmap_field, vmin=vmin_field, vmax=vmax_field,
+                            plot_contours=plot_contours)
+        ax[0, col_field].set_ylabel("Reference", fontsize=min_font_size+1)
+        
+        # Hide residual cell in reference row
+        ax[0, col_resid].axis('off')
+        
+        # Process each iteration
+        for i, (pred, it_label) in enumerate(zip(preds, row_labels)):
+            row = i + 1  # Skip reference row
+            
+            # Compute residual
+            residual = pred - exact
+            
+            # Field column: prediction
+            art_pred = plot_field(ax[row, col_field], X, Y, pred, 
+                                 cmap=cmap_field, vmin=vmin_field, vmax=vmax_field,
+                                 plot_contours=plot_contours)
+            if row == 1:  # Title only on first iteration row
+                ax[row, col_field].set_title(title_pred, fontsize=min_font_size+1)
+            
+            # Add row label on leftmost column
+            if col_field == 0:
+                ax[row, col_field].set_ylabel(it_label, fontsize=min_font_size+1)
+            
+            # Residual column
+            resid_lim = np.nanmax(np.abs(residual))
+            art_resid = plot_field(ax[row, col_resid], X, Y, residual, 
+                                  cmap=cmap_residual, vmin=-resid_lim, vmax=resid_lim)
+            if row == 1:  # Title only on first iteration row
+                title_resid = rf"${title[1:-1]} - {title_pred[1:-1]}$" if title.startswith("$") else f"{title} - {title_pred}"
+                ax[row, col_resid].set_title(title_resid, fontsize=min_font_size+1)
+            
+            # Add L2 error annotation (transparent background)
+            if show_l2_error:
+                exact_norm = np.linalg.norm(exact)
+                if exact_norm > 0:
+                    rel_l2_error = np.linalg.norm(residual) / exact_norm
+                    ax[row, col_resid].text(
+                        0.5, -0.05, r"$E_{L_2}=$" + f"{rel_l2_error:.2e}", 
+                        transform=ax[row, col_resid].transAxes, 
+                        ha='center', va='top', fontsize=min_font_size,
+                    )
+            
+            # Shift residual column left to make room for colorbar
+            pos = ax[row, col_resid].get_position()
+            ax[row, col_resid].set_position([
+                pos.x0 + shift_left, pos.y0, pos.width, pos.height
+            ])
+            
+            # Add colorbar for residual (on right side)
+            pos = ax[row, col_resid].get_position()  # Get updated position
+            cax_pos = mtransforms.Bbox.from_bounds(
+                pos.x1 + cbar_offset_x, pos.y0, cbar_width_rel, pos.height
+            )
+            cax = fig.add_axes(cax_pos)
+            cb_resid = fig.colorbar(art_resid["im"], cax=cax, orientation='vertical', format=make_formatter())
+            cb_resid.ax.tick_params(labelsize=min_font_size, length=1)
+            # if min_font_size < 5:
+                # _set_smart_ticks(cb_resid, -resid_lim, resid_lim)
+        
+        # Add colorbar for field (below the last iteration row)
+        pos = ax[n_rows-1, col_field].get_position()
+        cax_pos = mtransforms.Bbox.from_bounds(
+            pos.x0, pos.y0 - cbar_offset_y, pos.width, cbar_height_rel
+        )
+        cax = fig.add_axes(cax_pos)
+        cb_field = fig.colorbar(art_ref["im"], cax=cax, orientation='horizontal', format=make_formatter())
+        cb_field.ax.xaxis.set_ticks_position('bottom')
+        cb_field.ax.tick_params(labelsize=min_font_size, length=1)
+        # if min_font_size < 5:
+        #     _set_smart_ticks(cb_field, vmin_field, vmax_field)
+    
     return fig, ax

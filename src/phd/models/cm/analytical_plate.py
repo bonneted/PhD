@@ -548,6 +548,100 @@ def load_run(run_name, base_dir=None, restore_model=False):
                      restore_model=restore_model, train_fn=train)
 
 
+def extract_fields_at_iterations(results, iterations, field_names=None):
+    """
+    Extract field data at specific iterations from results.
+    
+    Args:
+        results: dict returned by train() or load_run()
+        iterations: list of iteration numbers to extract (use -1 for last)
+        field_names: list of field names to extract. If None, uses all available.
+    
+    Returns:
+        dict with keys:
+            "exact": dict mapping field_name -> 2D array
+            "pred": dict mapping field_name -> list of 2D arrays (one per iteration)
+            "iterations": list of requested iteration numbers (for labels)
+            "resolved_iterations": list of actual iteration numbers used (closest available)
+            "X", "Y": meshgrid arrays
+            
+    Example:
+        >>> data = extract_fields_at_iterations(results, [0, 1000, 5000], ["Ux", "Uy"])
+        >>> # data["iterations"] = [0, 1000, 5000]  (what you requested, for row labels)
+        >>> # data["resolved_iterations"] = [200, 1000, 5000]  (actual available steps used)
+        >>> fig, ax = plot_field_evolution(data["X"], data["Y"], data["exact"], data["pred"], 
+        ...     data["iterations"], field_titles={"Ux": r"$u_x$", "Uy": r"$u_y$"})
+    """
+    config = results.get("config", {})
+    field_saver = results.get("callbacks", {}).get("field_saver")
+    
+    if not field_saver or not field_saver.history:
+        raise ValueError("No field_saver history found in results.")
+    
+    # Get available steps and fields
+    available_steps = [h[0] for h in field_saver.history]
+    first_snapshot = field_saver.history[0][1]
+    available_fields = list(first_snapshot.keys())
+    
+    if field_names is None:
+        field_names = available_fields
+    else:
+        field_names = [f for f in field_names if f in available_fields]
+    
+    # Keep track of both requested and resolved iterations
+    requested_iters = []
+    resolved_iters = []
+    for it in iterations:
+        if it == -1:
+            requested_iters.append(available_steps[-1])
+            resolved_iters.append(available_steps[-1])
+        else:
+            requested_iters.append(it)
+            if it in available_steps:
+                resolved_iters.append(it)
+            else:
+                # Find closest available step
+                closest = min(available_steps, key=lambda x: abs(x - it))
+                resolved_iters.append(closest)
+    
+    # Create meshgrid
+    ngrid = int(np.sqrt(first_snapshot[field_names[0]].shape[0]))
+    x_lin = np.linspace(0, 1, ngrid)
+    X, Y = np.meshgrid(x_lin, x_lin, indexing="ij")
+    
+    # Compute exact solution
+    lmbd = config.get("problem", {}).get("material", {}).get("lmbd", 1.0)
+    mu = config.get("problem", {}).get("material", {}).get("mu", 0.5)
+    Q = config.get("problem", {}).get("material", {}).get("Q", 4.0)
+    net_type = config.get("model", {}).get("net_type", "SPINN")
+    
+    X_input = [x_lin.reshape(-1, 1)] * 2 if net_type == "SPINN" else np.stack((X.ravel(), Y.ravel()), axis=1)
+    exact_vals = exact_solution(X_input, lmbd, mu, Q, net_type)
+    
+    all_field_names = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
+    exact_dict = {
+        fname: exact_vals[:, all_field_names.index(fname)].reshape(ngrid, ngrid)
+        for fname in field_names
+    }
+    
+    # Extract predictions at specified iterations
+    pred_dict = {fname: [] for fname in field_names}
+    for it in resolved_iters:
+        idx = available_steps.index(it)
+        snapshot = field_saver.history[idx][1]
+        for fname in field_names:
+            pred_dict[fname].append(snapshot[fname].reshape(ngrid, ngrid))
+    
+    return {
+        "exact": exact_dict,
+        "pred": pred_dict,
+        "iterations": requested_iters,  # What was requested (for row labels)
+        "resolved_iterations": resolved_iters,  # What was actually used
+        "X": X,
+        "Y": Y,
+    }
+
+
 # =============================================================================
 # Plotting wrappers - delegate to phd.plot.plot_cm with problem-specific exact_solution
 # =============================================================================

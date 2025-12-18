@@ -22,6 +22,7 @@ from phd.plot.plot_util import (
     init_figure,
     subsample_frames,
     plot_comparison,
+    plot_field_evolution,
 )
 
 # LaTeX names for CM fields
