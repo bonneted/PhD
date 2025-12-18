@@ -84,8 +84,8 @@ def init_metrics(ax, steps, metrics_dict, selected_metrics=None, xlabel=None,
             else:
                 xlabel = f"Iteration: {int(current_step)}"
         else:
-            xlabel = "Time (min)" if step_type == "time" and time_unit == "min" else \
-                     "Time (s)" if step_type == "time" else "Iterations"
+            xlabel = "Time [min]" if step_type == "time" and time_unit == "min" else \
+                     "Time [s]" if step_type == "time" else "Iterations"
     ax.set_xlabel(xlabel)
     artists = {}
     colors_list = KUL_CYCLE

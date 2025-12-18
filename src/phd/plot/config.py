@@ -4,6 +4,7 @@ Centralized settings for figure scaling, font sizes, and matplotlib parameters.
 """
 
 import matplotlib as mpl        
+import copy
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
@@ -171,7 +172,7 @@ def set_current_config(config):
 
 def get_current_config():
     """Get the current plotting configuration (defaults to the global one)."""
-    return _current_config
+    return copy.copy(_current_config)
 
 
 # Default configuration instance

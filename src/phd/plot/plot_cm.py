@@ -524,8 +524,8 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
         else:
             ax_metrics.set_xlabel(f"Iteration: {int(current_step)}")
     else:
-        xlabel = "Time (min)" if step_type == "time" and time_unit == "min" else \
-                 "Time (s)" if step_type == "time" else "Iterations"
+        xlabel = "Time [min]" if step_type == "time" and time_unit == "min" else \
+                 "Time [s]" if step_type == "time" else "Iterations"
         ax_metrics.set_xlabel(xlabel)
     
     # Add metric name as title
@@ -714,7 +714,7 @@ def plot_metrics_comparison(results_dict, metric_name="L2 Error", run_names=None
     # Determine labels
     xlabel = "Iterations"
     if step_type == "time":
-        xlabel = f"Time ({time_unit})"
+        xlabel = f"Time [{time_unit}]"
         
     DEFAULT_LATEX_NAMES = {
         "L2 Error": r"$E_{L_2}$",
