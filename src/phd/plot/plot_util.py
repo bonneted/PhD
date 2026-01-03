@@ -67,7 +67,7 @@ def init_metrics(ax, steps, metrics_dict, selected_metrics=None, xlabel=None,
         dict of artists for animation updates
     """
     DEFAULT_LATEX_NAMES = {
-        "L2 Error": r"$E_{L_2}$",
+        "L2 Error": r"$E_{L^2}$",
         "PDE Loss": r"$\mathcal{L}_{\text{PDE}}$",
         "Material Loss": r"$\mathcal{L}_{\text{mat}}$",
         "DIC Loss": r"$\mathcal{L}_{\text{DIC}}$",
@@ -565,7 +565,7 @@ def plot_field_evolution(
                 if exact_norm > 0:
                     rel_l2_error = np.linalg.norm(residual) / exact_norm
                     ax[row, col_resid].text(
-                        0.5, -0.05, r"$E_{L_2}=$" + f"{rel_l2_error:.2e}", 
+                        0.5, -0.05, r"$E_{L^2}=$" + f"{rel_l2_error:.2e}", 
                         transform=ax[row, col_resid].transAxes, 
                         ha='center', va='top', fontsize=min_font_size,
                     )
