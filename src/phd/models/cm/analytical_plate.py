@@ -21,6 +21,8 @@ from phd.plot.plot_cm import (
     plot_results as _plot_results,
     animate,
     plot_compare,
+    plot_metrics_comparison,
+    plot_field_evolution,
     LATEX_FIELD_NAMES,
 )
 from phd.config import load_config
