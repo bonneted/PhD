@@ -28,7 +28,7 @@ model:
   architecture:
     n_hidden: 3
     width: 32
-    rank: 128
+    rank: 32
     activations: tanh
     initialization: "Glorot normal"
     mlp_type: mlp
