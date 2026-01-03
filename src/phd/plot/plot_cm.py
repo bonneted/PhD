@@ -153,7 +153,7 @@ def process_results(results, exact_solution_fn, plot_fields=None):
     return steps, metrics, vars_history, fields_init, get_snapshot, (Xmesh, Ymesh), config, fields_dict
 
 
-def init_plot(results, exact_solution_fn, iteration=-1, **opts):
+def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opts):
     """
     Initialize plot and return figure, axes, and artists for animation.
     
@@ -161,6 +161,9 @@ def init_plot(results, exact_solution_fn, iteration=-1, **opts):
         results: dict returned by train()
         exact_solution_fn: function(X_input, lmbd, mu, Q, net_type) -> exact values
         iteration: which iteration to show (-1 = last)
+        fig: matplotlib figure (optional). If None, a new figure is created.
+        ax: matplotlib axes array (optional). Must be 2D array matching expected layout.
+            If None, new axes are created.
     
     Options (pass as kwargs):
         fields: list of field names to plot, e.g. ["Ux", "Uy"]. None = all.
@@ -207,9 +210,14 @@ def init_plot(results, exact_solution_fn, iteration=-1, **opts):
     n_rows = 2 + int(o["show_residual"])
     n_cols = int(o["show_metrics"]) + n_fields
     
-    figwidth = get_current_config().page_width * (n_cols / 4)
-    figsize = (figwidth, figwidth * n_rows / n_cols + 0.05*get_current_config().page_width)
-    fig, ax = init_figure(n_rows, n_cols, dpi=o["dpi"], figsize=figsize)
+    # Use provided fig/ax or create new ones
+    if fig is None or ax is None:
+        figwidth = get_current_config().page_width * (n_cols / 4)
+        figsize = (figwidth, figwidth * n_rows / n_cols + 0.05*get_current_config().page_width)
+        fig, ax = init_figure(n_rows, n_cols, dpi=o["dpi"], figsize=figsize)
+    else:
+        # Ensure ax is 2D array
+        ax = np.atleast_2d(ax)
     col_offset = int(o["show_metrics"])
     
     # Store artists for animation (unified structure with runs_data/runs_artists)
@@ -358,7 +366,7 @@ def update_frame(frame_idx, fig, artists):
     return []
 
 
-def plot_results(results, exact_solution_fn, iteration=-1, **opts):
+def plot_results(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opts):
     """
     Plot results with configurable layout.
     
@@ -366,6 +374,9 @@ def plot_results(results, exact_solution_fn, iteration=-1, **opts):
         results: dict returned by train()
         exact_solution_fn: function(X_input, lmbd, mu, Q, net_type) -> exact values
         iteration: which iteration to show (-1 = last)
+        fig: matplotlib figure (optional). If None, a new figure is created.
+        ax: matplotlib axes array (optional). Must be 2D array matching expected layout.
+            If None, new axes are created.
     
     Options (pass as kwargs or in opts dict):
         fields: list of field names to plot, e.g. ["Ux", "Uy"]. None = all.
@@ -378,7 +389,7 @@ def plot_results(results, exact_solution_fn, iteration=-1, **opts):
         fig: matplotlib figure
         artists: dict of artists for animation (use with animate())
     """
-    fig, artists = init_plot(results, exact_solution_fn, iteration=iteration, **opts)
+    fig, artists = init_plot(results, exact_solution_fn, iteration=iteration, fig=fig, ax=ax, **opts)
     return fig, artists
 
 
@@ -531,7 +542,7 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
     
     # Add metric name as title
     if len(o["metrics"]) == 1:
-        latex_names = {"L2 Error": r"$E_{L_2}$", "Total Loss": r"$\mathcal{L}$"}
+        latex_names = {"L2 Error": r"$E_{L^2}$", "Total Loss": r"$\mathcal{L}$"}
         ax_metrics.set_title(latex_names.get(o["metrics"][0], o["metrics"][0]))
     ax_metrics.legend(fontsize=get_current_config().min_font_size, handlelength=1).get_frame().set_linewidth(get_current_config().scale)
     
@@ -718,7 +729,7 @@ def plot_metrics_comparison(results_dict, metric_name="L2 Error", run_names=None
         xlabel = f"Time [{time_unit}]"
         
     DEFAULT_LATEX_NAMES = {
-        "L2 Error": r"$E_{L_2}$",
+        "L2 Error": r"$E_{L^2}$",
         "PDE Loss": r"$\mathcal{L}_{\text{PDE}}$",
         "Material Loss": r"$\mathcal{L}_{\text{mat}}$",
         "Total Loss": r"$\mathcal{L}_{\text{total}}$",

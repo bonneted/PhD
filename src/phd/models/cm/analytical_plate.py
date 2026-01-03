@@ -646,14 +646,14 @@ def extract_fields_at_iterations(results, iterations, field_names=None):
 # Plotting wrappers - delegate to phd.plot.plot_cm with problem-specific exact_solution
 # =============================================================================
 
-def init_plot(results, iteration=-1, **opts):
+def init_plot(results, iteration=-1, fig=None, ax=None, **opts):
     """Initialize plot for analytical plate results. See phd.plot.plot_cm.init_plot for details."""
-    return _init_plot(results, exact_solution, iteration=iteration, **opts)
+    return _init_plot(results, exact_solution, iteration=iteration, fig=fig, ax=ax, **opts)
 
 
-def plot_results(results, iteration=-1, **opts):
+def plot_results(results, iteration=-1, fig=None, ax=None, **opts):
     """Plot analytical plate results. See phd.plot.plot_cm.plot_results for details."""
-    return _plot_results(results, exact_solution, iteration=iteration, **opts)
+    return _plot_results(results, exact_solution, iteration=iteration, fig=fig, ax=ax, **opts)
 
 
 if __name__ == "__main__":
