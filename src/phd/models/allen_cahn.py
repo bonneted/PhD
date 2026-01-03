@@ -563,7 +563,7 @@ def plot_results(fig, ax, fields, tt, xx, rows_title, powerlimits=(-2, 2)):
             # add relative L2 error for error plots
             if fname == "Error" and row > 0:
                 rel_l2_error = np.linalg.norm(data) / np.linalg.norm(ref_field[0])
-                ax[row][col].text(0.07, 0.93, r"$E_{L_2}=$"+f"{rel_l2_error:.2e}", transform=ax[row][col].transAxes, ha='left', va='top', fontsize=min_font_size)
+                ax[row][col].text(0.07, 0.93, r"$E_{L^2}=$"+f"{rel_l2_error:.2e}", transform=ax[row][col].transAxes, ha='left', va='top', fontsize=min_font_size)
 
 
             
