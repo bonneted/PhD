@@ -10,3 +10,5 @@ results/**
 chapters/IV_MaterialCharacterization/images/
 # chapters/II_PINNs/images/*.png
 
+chapters/III_ImprovingPINNsOld/*
+chapters/III_SPINNOld/*
