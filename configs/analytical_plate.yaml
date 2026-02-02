@@ -12,7 +12,8 @@ problem:
     mu: 0.5
     Q: 4.0
   
-  # Fields to log during training
+  # Fields to log during training 
+  # available: Ux, Uy, Exx, Eyy, Exy, Sxx, Syy, Sxy
   log_fields:
     - Ux
     - Uy
