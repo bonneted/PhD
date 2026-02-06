@@ -480,7 +480,7 @@ def plot_results(fig, ax, fields, tt, xx, rows_title, powerlimits=(-2, 2)):
             if row == 0:
                 # Reference row
                 if col == 0:
-                    im = ax[row][col].pcolor(tt, xx, ref_field[0], vmin=vmin, vmax=vmax)
+                    im = ax[row][col].pcolor(tt, xx, ref_field[0], vmin=vmin, vmax=vmax, cmap=cmap)
                     ax[row][col].set_title(r"$\mathbf{u}(\mathbf{t},\mathbf{x})$")
                     ax[row][col].set_ylabel(r"$\mathbf{x}$")
                 else:
@@ -563,7 +563,7 @@ def plot_results(fig, ax, fields, tt, xx, rows_title, powerlimits=(-2, 2)):
             # add relative L2 error for error plots
             if fname == "Error" and row > 0:
                 rel_l2_error = np.linalg.norm(data) / np.linalg.norm(ref_field[0])
-                ax[row][col].text(0.07, 0.93, r"$E_{L^2}=$"+f"{rel_l2_error:.2e}", transform=ax[row][col].transAxes, ha='left', va='top', fontsize=min_font_size)
+                ax[row][col].text(0.07, 0.93, r"$e=$"+f"{rel_l2_error:.2e}", transform=ax[row][col].transAxes, ha='left', va='top', fontsize=min_font_size)
 
 
             
