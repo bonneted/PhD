@@ -548,7 +548,7 @@ def plot_results(fig, ax, fields, tt, xx, rows_title, powerlimits=(-2, 2)):
                 cbar_x_offset = 0.05 / fig.get_size_inches()[0]
                 cax_pos = mtransforms.Bbox.from_bounds(pos.x1 + cbar_x_offset, pos.y0, cbar_width, pos.height)
                 cax = fig.add_axes(cax_pos)
-                format = make_formatter((-2, 2)) if min_font_size < 5 and row == 1 else make_formatter(powerlimits)
+                format = make_formatter((-2, 2)) if min_font_size < 8 and row == 1 else make_formatter(powerlimits)
                 cbfield = fig.colorbar(im, cax=cax, orientation='vertical', format=format)
                 cbfield.ax.yaxis.set_ticks_position('right')
                 cbfield.ax.yaxis.set_label_position('right')
@@ -556,14 +556,14 @@ def plot_results(fig, ax, fields, tt, xx, rows_title, powerlimits=(-2, 2)):
                                        top=False, bottom=False, 
                                        left=False, right=True, labelleft=False, labelright=True)
                 cbfield.ax.set_zorder(10)
-                if min_font_size < 5 :
+                if min_font_size < 8 :
                     vmin, vmax = im.get_clim()
                     _set_smart_ticks(cbfield, vmin, vmax)
             
             # add relative L2 error for error plots
             if fname == "Error" and row > 0:
                 rel_l2_error = np.linalg.norm(data) / np.linalg.norm(ref_field[0])
-                ax[row][col].text(0.07, 0.93, r"$e=$"+f"{rel_l2_error:.2e}", transform=ax[row][col].transAxes, ha='left', va='top', fontsize=min_font_size)
+                ax[row][col].text(0.07, 0.93, r"$e= $"+f"{rel_l2_error:.2e}", transform=ax[row][col].transAxes, ha='left', va='top', fontsize=min_font_size)
 
 
             
