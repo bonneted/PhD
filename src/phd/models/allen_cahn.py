@@ -16,6 +16,7 @@ from phd.io import get_dataset_path, create_interpolation_fn
 from phd.io import save_run_data as _save_run_data
 from phd.io import load_run as _load_run
 from phd.io import save_field, load_fields as _load_fields
+from phd.io import VariableValue
 from phd.plot import get_current_config
 from phd.config import load_config
 
@@ -60,32 +61,49 @@ def test_data(cfg: DictConfig, dataset_path: str = data_set_path):
     return X_input, xx, tt, u
 
 
-def pde(cfg: DictConfig):
-    """Create PDE function based on configuration (PINN vs SPINN)."""
-    d = cfg.problem.pde_coefficient
+def pde(cfg: DictConfig, d_value=None, n_sa_vars=0, training_factor=None):
+    """Create PDE function based on configuration (PINN vs SPINN).
+    
+    Args:
+        cfg: configuration
+        d_value: fixed d coefficient (used when no trainable variables)
+        n_sa_vars: number of SA variables preceding d in unknowns list
+        training_factor: scale factor for trainable d (inverse problem)
+    """
+    d = d_value if d_value is not None else cfg.problem.pde_coefficient
     net_type = cfg.model.net_type
     sa_enabled = cfg.training.self_attention.enabled
+    task = OmegaConf.select(cfg, "task.type", default="forward")
+    has_unknowns = sa_enabled or task == "inverse"
     
     def hvp_fwdfwd(f, x, tangents, return_primals=False):
         g = lambda primals: jax.jvp(f, (primals,), tangents)[1]
         primals_out, tangents_out = jax.jvp(g, x, tangents)
         return (primals_out, tangents_out) if return_primals else tangents_out
     
+    def _get_d(unknowns):
+        """Get the d coefficient value from unknowns or fixed value."""
+        if task == "inverse" and unknowns is not None:
+            return unknowns[n_sa_vars] * training_factor
+        return d
+    
     if net_type == "PINN":
         def pde_pinn(x, y, unknowns=None):
+            d_val = _get_d(unknowns)
             dy_t = dde.grad.jacobian(y, x, i=0, j=1)
             dy_xx = dde.grad.hessian(y, x, i=0, j=0)
             if dde.backend.backend_name == "jax":
                 y, dy_t, dy_xx = y[0], dy_t[0], dy_xx[0]
-            loss = dy_t - d * dy_xx - 5 * (y - y**3)
-            if sa_enabled and unknowns is not None:  # Self-Attention weight update
+            loss = dy_t - d_val * dy_xx - 5 * (y - y**3)
+            if sa_enabled and unknowns is not None:
                 pde_w = unknowns[0]
                 loss = pde_w * loss
             return loss
-        return pde_pinn if sa_enabled else lambda x, y: pde_pinn(x, y)
+        return pde_pinn if has_unknowns else lambda x, y: pde_pinn(x, y)
     
     else:  # SPINN
         def pde_spinn(x, y, unknowns=None):
+            d_val = _get_d(unknowns)
             X = x  # x is the list format [x_coords, t_coords]
             x_coords, t_coords = X[0].reshape(-1, 1), X[1].reshape(-1, 1)
             v_x = jnp.ones_like(x_coords)
@@ -94,12 +112,12 @@ def pde(cfg: DictConfig):
             u = y[0]
             dy_t = jax.jvp(lambda t: y[1]((x_coords, t)), (t_coords,), (v_t,))[1]
             dy_xx = hvp_fwdfwd(lambda x: y[1]((x, t_coords)), (x_coords,), (v_x,))
-            loss = dy_t - d * dy_xx - 5 * (u - u**3)
-            if sa_enabled and unknowns is not None:  # Self-Attention weight update
+            loss = dy_t - d_val * dy_xx - 5 * (u - u**3)
+            if sa_enabled and unknowns is not None:
                 pde_w = unknowns[0]
                 loss = pde_w * loss
             return loss
-        return pde_spinn if sa_enabled else lambda x, y: pde_spinn(x, y)
+        return pde_spinn if has_unknowns else lambda x, y: pde_spinn(x, y)
 
 
 
@@ -108,6 +126,7 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None) ->
     if cfg is None:
         cfg = load_config(config_name="allen_cahn", overrides=overrides or [])
     
+    task = OmegaConf.select(cfg, "task.type", default="forward")
     net_type = cfg.model.net_type
     n_hidden = cfg.model.architecture.n_hidden
     width = cfg.model.architecture.width
@@ -123,10 +142,14 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None) ->
     lr = cfg.training.lr
     lr_decay = cfg.training.lr_decay
     num_domain = cfg.training.num_domain
+    log_every = OmegaConf.select(cfg, "training.log_every", default=100)
     
     sa_enabled = cfg.training.self_attention.enabled
     sa_init = cfg.training.self_attention.init
     sa_update_factor = cfg.training.self_attention.update_factor
+    
+    # True PDE coefficient (used for data generation and metrics)
+    d_true = cfg.problem.pde_coefficient
     
     seed = cfg.seed
     
@@ -139,8 +162,16 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None) ->
     if dde.backend.backend_name == "jax":
         jax.config.update("jax_default_matmul_precision", "highest")
 
-    # Self-Attention weights
+    # =========================================================================
+    # Build external_trainable_variables list
+    # Order: [SA_pde_weights, d_trainable (if inverse)]
+    # =========================================================================
     trainable_variables = []
+    n_sa_vars = 0
+    d_trainable = None
+    training_factor = None
+
+    # --- Self-Attention weights ---
     if sa_enabled:
         key = jax.random.PRNGKey(seed)
         if sa_init == "constant":
@@ -151,8 +182,22 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None) ->
             pde_weights = jnp.array(sa_init).reshape(-1, 1)
         pde_weights = dde.Variable(pde_weights, update_factor=sa_update_factor)
         trainable_variables.append(pde_weights)
+        n_sa_vars = 1
 
-    pde_fn = pde(cfg)
+    # --- Trainable PDE coefficient (inverse problem) ---
+    if task == "inverse":
+        inv = cfg.task.inverse
+        d_init = inv.init_guess.pde_coefficient
+        training_factor = inv.training_factor
+        
+        if inv.normalize_parameter:
+            training_factor *= d_init
+        
+        d_trainable = dde.Variable(d_init / training_factor)
+        trainable_variables.append(d_trainable)
+
+    # Build PDE function
+    pde_fn = pde(cfg, d_value=d_true, n_sa_vars=n_sa_vars, training_factor=training_factor)
 
     @dde.utils.list_handler
     def transform_coords(x):
@@ -188,14 +233,60 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None) ->
         t_all = np.linspace(0, 1, int(np.sqrt(num_domain))).reshape(-1, 1)
         geomtime = dde.geometry.ListPointCloud([x_all, t_all])
 
+    # =========================================================================
+    # Boundary Conditions / Measurements
+    # =========================================================================
+    bcs = []
+    
+    if task == "inverse":
+        inv = cfg.task.inverse
+        n_obs = inv.n_observations
+        noise_ratio = inv.noise_ratio
+        
+        # Generate measurement points
+        x_obs = np.linspace(-1, 1, n_obs).reshape(-1, 1)
+        t_obs = np.linspace(0, 1, n_obs).reshape(-1, 1)
+        
+        # Generate synthetic observation data from exact solution
+        solution_fn_obs = exact_solution(cfg)
+        
+        if net_type == "SPINN":
+            X_obs_input = [x_obs, t_obs]
+            # For generating data, need meshgrid points
+            xx_obs, tt_obs = np.meshgrid(x_obs.squeeze(), t_obs.squeeze(), indexing="ij")
+            X_obs_flat = np.vstack((xx_obs.ravel(), tt_obs.ravel())).T
+            u_obs = solution_fn_obs(X_obs_flat).reshape(-1, 1)
+        else:
+            xx_obs, tt_obs = np.meshgrid(x_obs.squeeze(), t_obs.squeeze(), indexing="ij")
+            X_obs_input = np.vstack((xx_obs.ravel(), tt_obs.ravel())).T
+            u_obs = solution_fn_obs(X_obs_input).reshape(-1, 1)
+        
+        # Add noise
+        if noise_ratio > 0:
+            noise_floor = noise_ratio * np.std(u_obs)
+            u_obs += np.random.normal(0, noise_floor, u_obs.shape)
+        
+        # Measurement BC: match predicted u to observations
+        if net_type == "SPINN":
+            measure_u = dde.PointSetOperatorBC(
+                X_obs_input, u_obs,
+                lambda x, f, x_np: f[0].reshape(-1, 1)
+            )
+        else:
+            measure_u = dde.PointSetOperatorBC(
+                X_obs_input, u_obs,
+                lambda x, f, x_np: f[0].reshape(-1, 1)
+            )
+        bcs.append(measure_u)
+
     # Create exact solution for metrics
     solution_fn = exact_solution(cfg)
 
     if net_type == "PINN":
-        data = dde.data.TimePDE(geomtime, pde_fn, [], num_domain=num_domain,
+        data = dde.data.TimePDE(geomtime, pde_fn, bcs, num_domain=num_domain,
                                 num_boundary=0, num_initial=0, solution=solution_fn)
     else:
-        data = dde.data.PDE(geomtime, pde_fn, [], num_domain=num_domain,
+        data = dde.data.PDE(geomtime, pde_fn, bcs, num_domain=num_domain,
                            num_boundary=0, is_SPINN=True, solution=solution_fn)
 
     # Network
@@ -211,12 +302,27 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None) ->
 
     model = dde.Model(data, net)
 
+    # Callbacks
+    callbacks = []
+    parameter_logger = None
+    
+    if task == "inverse":
+        parameter_logger = VariableValue(
+            [d_trainable],
+            period=log_every,
+            filename=None,
+            precision=6,
+            scale_factors=[training_factor],
+        )
+        callbacks.append(parameter_logger)
+
     # Training
     start_time = time.time()
     model.compile("adam", lr=lr, decay=lr_decay,
                   metrics=["l2 relative error"],
-                  external_trainable_variables=trainable_variables)
-    losshistory, train_state = model.train(iterations=n_iter)
+                  external_trainable_variables=trainable_variables if trainable_variables else None)
+    losshistory, train_state = model.train(iterations=n_iter, callbacks=callbacks,
+                                           display_every=log_every)
     elapsed = time.time() - start_time
     its_per_sec = n_iter / elapsed if elapsed > 0 else 0
 
@@ -225,14 +331,27 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None) ->
     final_step = losshistory.steps[-1] if losshistory.steps else n_iter
     snapshot_fields(cfg, model, final_step, fields)
 
-    return {
-        "config": OmegaConf.to_container(cfg, resolve=True),
+    results = {
+        "config": cfg,
         "model": model,
-        "elapsed_time": elapsed,
-        "iterations_per_sec": its_per_sec,
+        "runtime_metrics": {
+            "elapsed_time": elapsed,
+            "iterations_per_sec": its_per_sec,
+        },
         "losshistory": losshistory,
         "fields": fields,
+        "callbacks": {
+            "variable_value": parameter_logger,  # For accessing logged parameters over time
+        },
     }
+    
+    # Add inverse-specific results
+    if task == "inverse" and parameter_logger is not None:
+        d_final = float(d_trainable.value) * training_factor
+        print(f"\nIdentified d = {d_final:.6f} (true = {d_true:.6f}, "
+              f"error = {abs(d_final - d_true)/d_true*100:.2f}%)")
+    
+    return results
 
 
 # =============================================================================
@@ -359,9 +478,10 @@ def snapshot_fields(cfg: DictConfig, model, step: int, fields: dict, dataset_pat
     y_pred = model.predict(X_input)
     u_pred = y_pred.reshape(u_true.shape)
     
-    # Compute PDE residual (with SA disabled)
+    # Compute PDE residual (with SA disabled, forward mode for evaluation)
     cfg_eval = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
     cfg_eval.training.self_attention.enabled = False
+    OmegaConf.update(cfg_eval, "task.type", "forward", force_add=True)
     pde_fn = pde(cfg_eval)
     f = model.predict(X_input, operator=pde_fn)
     pde_loss = f.reshape(u_true.shape)

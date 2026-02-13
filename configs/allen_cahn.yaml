@@ -58,8 +58,14 @@ training:
 # --- Task ---
 task:
   type: forward  # forward or inverse
-  # For inverse problems, specify parameters to infer:
-  # inverse_params: [pde_coefficient]
+  # For inverse problems:
+  inverse:
+    init_guess:
+      pde_coefficient: 0.002  # Initial guess for d (true = 0.001)
+    training_factor: 1.0     # Scale factor for trainable variable
+    normalize_parameter: true # If true, training_factor *= init_guess
+    n_observations: 50      # Number of measurement points (total = n_observations per axis)
+    noise_ratio: 0.0         # Add noise to observations (fraction of std)
 
 # --- Results ---
 results:
