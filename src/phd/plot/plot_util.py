@@ -67,7 +67,7 @@ def init_metrics(ax, steps, metrics_dict, selected_metrics=None, xlabel=None,
         dict of artists for animation updates
     """
     DEFAULT_LATEX_NAMES = {
-        "L2 Error": r"$E_{L^2}$",
+        "L2 Error": r"$e_{L^2}^{rel}$",
         "PDE Loss": r"$\mathcal{L}_{\text{PDE}}$",
         "Material Loss": r"$\mathcal{L}_{\text{mat}}$",
         "DIC Loss": r"$\mathcal{L}_{\text{DIC}}$",
@@ -141,7 +141,8 @@ def update_metrics(current_step, artists):
 
 def init_parameter_evolution(ax, steps, history, true_val=None, label="Param", 
                              color='b', xlabel=None, show_xlabel=True,
-                             step_type="iteration", time_unit="s"):
+                             step_type="iteration", time_unit="s",
+                             value_fmt=".3f"):
     """
     Initialize parameter evolution plot.
     Uses scatter marker for labelling with current value.
@@ -168,7 +169,7 @@ def init_parameter_evolution(ax, steps, history, true_val=None, label="Param",
     line, = ax.plot([], [], color=color, zorder=3)
     # Scatter with value in label
     scatter = ax.scatter([], [], c='k', zorder=4, 
-                         label=f"{label} = {history[0]:.3f}")
+                         label=f"{label} = {history[0]:{value_fmt}}")
     
     if show_xlabel:
         if xlabel is None:
@@ -177,7 +178,7 @@ def init_parameter_evolution(ax, steps, history, true_val=None, label="Param",
         ax.set_xlabel(xlabel)
     ax.legend(handlelength=0.5).get_frame().set_linewidth(0.1)
     
-    return {"line": line, "scatter": scatter, "data": history, "steps": steps, "label": label}
+    return {"line": line, "scatter": scatter, "data": history, "steps": steps, "label": label, "value_fmt": value_fmt}
 
 
 def update_parameter_evolution(current_step, artist):
@@ -195,7 +196,8 @@ def update_parameter_evolution(current_step, artist):
     
     artist["line"].set_data(steps[:idx+1], data[:idx+1])
     artist["scatter"].set_offsets([[steps[idx], data[idx]]])
-    artist["scatter"].set_label(f"{artist['label']} = {data[idx]:.3f}")
+    value_fmt = artist.get("value_fmt", ".3f")
+    artist["scatter"].set_label(f"{artist['label']} = {data[idx]:{value_fmt}}")
     
     # Update legend
     ax = artist["scatter"].axes
@@ -565,7 +567,7 @@ def plot_field_evolution(
                 if exact_norm > 0:
                     rel_l2_error = np.linalg.norm(residual) / exact_norm
                     ax[row, col_resid].text(
-                        0.5, -0.05, r"$E_{L^2}=$" + f"{rel_l2_error:.2e}", 
+                        0.5, -0.05, r"$e_{L^2}^{rel}=$" + f"{rel_l2_error:.2e}", 
                         transform=ax[row, col_resid].transAxes, 
                         ha='center', va='top', fontsize=min_font_size,
                     )

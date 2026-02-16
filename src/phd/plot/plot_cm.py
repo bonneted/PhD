@@ -8,6 +8,7 @@ Builds on top of the general plotting utilities in phd.plot.plot_util.
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+import matplotlib.colors as mcolors
 from phd.plot.config import get_current_config, KUL_CYCLE
 
 # Re-export general plotting functions for convenient import
@@ -182,11 +183,24 @@ def process_results(results, exact_solution_fn, plot_fields=None):
         for idx, meta in enumerate(var_meta, start=1):
             if idx >= var_hist.shape[1]:
                 continue
+            values = var_hist[:, idx]
+            true_val = meta["true_val"]
+            label = meta["label"]
+            value_fmt = ".3f"
+
+            if meta["key"] in {"E", "E1", "E2"}:
+                values = values / 1e3
+                if true_val is not None:
+                    true_val = float(true_val) / 1e3
+                label = f"{label}"# [GPa]" --> too long for legend
+                value_fmt = ".1f"
+
             vars_history[meta["key"]] = {
                 "steps": var_hist[:, 0],
-                "values": var_hist[:, idx],
-                "label": meta["label"],
-                "true_val": meta["true_val"],
+                "values": values,
+                "label": label,
+                "true_val": true_val,
+                "value_fmt": value_fmt,
             }
 
     # Prepare mesh grid
@@ -315,7 +329,7 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
     
     if o["show_metrics"]:
         has_variables = False
-        var_colors = ["C1", "C2"]
+        var_colors = [mcolors.to_hex(KUL_CYCLE[1]), mcolors.to_hex(KUL_CYCLE[2])]
         var_items = list(vars_history.items())[:2]
         for row in range(2):
             ax_var = ax[row, 0]
@@ -329,9 +343,11 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
                 v = var_data.get("values", np.zeros_like(steps))
                 lbl = var_data.get("label", var_name)
                 true_val = var_data.get("true_val", None)
+                value_fmt = var_data.get("value_fmt", ".3f")
                 clr = var_colors[row % len(var_colors)]
                 art = init_parameter_evolution(ax_var, s, v, true_val=true_val, label=lbl, color=clr,
-                                               show_xlabel=False, step_type=step_type, time_unit=time_unit)
+                                               show_xlabel=False, step_type=step_type, time_unit=time_unit,
+                                               value_fmt=value_fmt)
                 run_artists["var_artists"][var_name] = art
                 update_parameter_evolution(current_step, art)
 
@@ -353,8 +369,17 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
         col = col_offset + i
         data_list = snapshot[fname]
         title = fields_init[fname].get("title", fname)
-        title_pred = title[:-1] + "^*$" if title.endswith("$") else title + "*"
-        
+        if title.endswith("$"):
+            base = title[1:-1]
+            base = title[1:-1]
+            if "_" in base:
+                symbol, suffix = base.split("_", 1)
+                title_pred = "$" + r"\tilde{" + symbol + "}" + "_" + suffix + "$"
+            else:
+                title_pred = rf"$\tilde{{{base}}}$"
+        else:
+            title_pred = title + "*"
+    
         # Row 0: Reference
         art_ref = plot_field(ax[0, col], mx, my, data_list[0], title=title, cmap="viridis", plot_contours=o["plot_contours"])
         add_colorbar(fig, ax[0, col], art_ref["im"], location="top", shift=0.05)
@@ -573,8 +598,16 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
     # Get exact solution and field title
     exact_data = fields_init1[field]["data"][0]
     field_title = fields_init1[field].get("title", field)
-    field_title_pred = field_title[:-1] + "^*$" if field_title.endswith("$") else field_title + "*"
-    
+    if field_title.endswith("$"):
+        base = field_title[1:-1]
+        base = field_title[1:-1]
+        if "_" in base:
+            symbol, suffix = base.split("_", 1)
+            field_title_pred = "$" + r"\tilde{" + symbol + "}" + "_" + suffix + "$"
+        else:
+            field_title_pred = rf"$\tilde{{{base}}}$"
+    else:
+        field_title_pred = field_title + "*"
     # Get initial snapshots
     snapshot1 = get_snapshot_fn1(iteration)
     snapshot2 = get_snapshot_fn2(iteration)
@@ -621,7 +654,7 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
     
     # Add metric name as title
     if len(o["metrics"]) == 1:
-        latex_names = {"L2 Error": r"$E_{L^2}$", "Total Loss": r"$\mathcal{L}$"}
+        latex_names = {"L2 Error": r"e_{L^2}^{rel}", "Total Loss": r"$\mathcal{L}$"}
         ax_metrics.set_title(latex_names.get(o["metrics"][0], o["metrics"][0]))
     ax_metrics.legend(fontsize=get_current_config().min_font_size, handlelength=1).get_frame().set_linewidth(get_current_config().scale)
     
@@ -820,7 +853,7 @@ def plot_metrics_comparison(results_dict, metric_name="L2 Error", run_names=None
         xlabel = f"Time [{time_unit}]"
         
     DEFAULT_LATEX_NAMES = {
-        "L2 Error": r"$E_{L^2}$",
+        "L2 Error": r"$e_{L^2}^{rel}$",
         "PDE Loss": r"$\mathcal{L}_{\text{PDE}}$",
         "Material Loss": r"$\mathcal{L}_{\text{mat}}$",
         "Total Loss": r"$\mathcal{L}_{\text{total}}$",

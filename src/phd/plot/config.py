@@ -7,6 +7,13 @@ import matplotlib as mpl
 import copy
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+from cycler import cycler
+
+try:
+    import scienceplots  # noqa: F401  # Registers 'science' style with matplotlib
+    _HAS_SCIENCEPLOTS = True
+except Exception:
+    _HAS_SCIENCEPLOTS = False
 
 # Module-level variable to store the current plotting config
 _current_config = None
@@ -61,7 +68,7 @@ def apply_kul_colors():
     # Convert to hex for matplotlib
     cycle_hex = [mcolors.rgb2hex(c) for c in KUL_CYCLE]
     
-    plt.rcParams['axes.prop_cycle'] = plt.cycler(color=cycle_hex)
+    plt.rcParams['axes.prop_cycle'] = cycler(color=cycle_hex)
     
     # Optionally set other color defaults
     plt.rcParams['axes.edgecolor'] = mcolors.rgb2hex(KUL_COLORS['tertiaryblue'])
@@ -147,6 +154,8 @@ class PlottingConfig:
     
     def apply_all(self):
         """Apply all settings at once."""
+        if _HAS_SCIENCEPLOTS:
+            plt.style.use(["science", "grid"])
         self.apply_font_sizes()
         self.apply_figure_scale()
         apply_kul_colors()
