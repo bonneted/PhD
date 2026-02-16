@@ -1,0 +1,129 @@
+# Side-Loaded Plate problem - Complete self-contained configuration
+
+# --- Problem Definition ---
+problem:
+  name: side_loaded_plate
+
+  geometry:
+    # If null, inferred from FEM dataset coordinates
+    length: null
+
+  loading:
+    m: 10.0
+    b: 50.0
+
+  # FEM reference data (stored in src/phd/io/dataset/side_loaded_plate)
+  reference:
+    dataset:
+      isotropic: 3x3mm.dat
+      orthotropic: 100x100mm_ortho.dat
+
+  material:
+    # isotropic or orthotropic
+    law: isotropic
+
+    isotropic:
+      E: 210000.0
+      nu: 0.3
+
+    orthotropic:
+      E1: 210000.0
+      E2: 105000.0
+      G12: 80000.0
+      nu12: 0.3
+
+  # Fields to log during training
+  # available: Ux, Uy, Exx, Eyy, Exy, Sxx, Syy, Sxy
+  log_fields:
+    - Ux
+    - Uy
+    - Sxx
+    - Syy
+    - Sxy
+
+  # Hard-BC displacement scaling; <= 0 uses auto-scaling from FEM reference
+  displacement_scale:
+    - 0.0
+    - 0.0
+
+# --- Model Architecture ---
+model:
+  net_type: SPINN  # SPINN or PINN
+  formulation: mixed  # mixed (5 outputs) or displacement (2 outputs)
+
+  architecture:
+    n_hidden: 3
+    width: 32
+    rank: 32
+    activations: tanh
+    initialization: "Glorot normal"
+    mlp_type: mlp
+
+  fourier_features:
+    enabled: false
+    n_features: 64
+    sigma: 1.0
+
+# --- Training Settings ---
+training:
+  n_iter: 60000
+  lr: 1.0e-3
+  num_domain: 10000
+  bc_type: hard
+  coord_normalization: false
+  stress_bc: true
+
+  lr_decay: null
+
+  self_attention:
+    enabled: false
+    init: constant
+    update_factor: -1.0
+    share_weights: true
+
+  log_every: 200
+  generate_video: false
+
+# --- Task ---
+task:
+  type: forward  # forward or inverse
+
+  inverse:
+    measurements:
+      type: displacement  # displacement or strain
+      n_observations:
+        x: 10
+        y: 10
+      noise_ratio: 0.0
+
+    # Used when problem.material.law == isotropic
+    init_guess:
+      isotropic:
+        E: 100000.0
+        nu: 0.2
+      orthotropic:
+        E1: 157500.0
+        E2: 157500.0
+        G12: 50000.0
+        nu12: 0.2
+
+    training_factors:
+      isotropic:
+        E: 1.0
+        nu: 1.0
+      orthotropic:
+        E1: 1.0
+        E2: 1.0
+        G12: 1.0
+        nu12: 1.0
+
+    normalize_parameters: true
+
+# --- Results ---
+results:
+  base_dir: results
+  experiment_name: null
+  save_on_disk: false
+
+# --- Reproducibility ---
+seed: 0
