@@ -5,8 +5,8 @@ problem:
   name: side_loaded_plate
 
   geometry:
-    # If null, inferred from FEM dataset coordinates
-    length: null
+    # Domain length in mm (used for geometry AND FEM dataset selection)
+    length: 3.0
 
   loading:
     m: 10.0
@@ -14,9 +14,14 @@ problem:
 
   # FEM reference data (stored in src/phd/io/dataset/side_loaded_plate)
   reference:
-    dataset:
-      isotropic: 3x3mm.dat
-      orthotropic: 100x100mm_ortho.dat
+    # Dataset selected from geometry.length
+    # Keys are integer lengths in mm
+    dataset_by_length:
+      isotropic:
+        3: 3x3mm.dat
+        100: 100x100mm.dat
+      orthotropic:
+        100: 100x100mm_ortho.dat
 
   material:
     # isotropic or orthotropic

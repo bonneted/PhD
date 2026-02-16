@@ -32,6 +32,69 @@ LATEX_FIELD_NAMES = {
 }
 
 
+def _cfg_get(config, path, default=None):
+    """Safe nested config access for DictConfig or dict using dot paths."""
+    cur = config
+    for part in path.split("."):
+        if cur is None:
+            return default
+        try:
+            if isinstance(cur, dict):
+                cur = cur.get(part, None)
+            else:
+                cur = cur[part]
+        except Exception:
+            return default
+    return cur if cur is not None else default
+
+
+def _infer_variable_meta(config, n_vars):
+    """Infer variable names/labels/true values from config structure."""
+    if n_vars <= 0:
+        return []
+
+    law = str(_cfg_get(config, "problem.material.law", "")).lower()
+
+    if law == "isotropic":
+        meta = [
+            {"key": "E", "label": r"$E$", "true_val": _cfg_get(config, "problem.material.isotropic.E", None)},
+            {"key": "nu", "label": r"$\nu$", "true_val": _cfg_get(config, "problem.material.isotropic.nu", None)},
+        ]
+        return meta[:n_vars]
+
+    if law == "orthotropic":
+        meta = [
+            {"key": "E1", "label": r"$E_1$", "true_val": _cfg_get(config, "problem.material.orthotropic.E1", None)},
+            {"key": "E2", "label": r"$E_2$", "true_val": _cfg_get(config, "problem.material.orthotropic.E2", None)},
+            {"key": "G12", "label": r"$G_{12}$", "true_val": _cfg_get(config, "problem.material.orthotropic.G12", None)},
+            {"key": "nu12", "label": r"$\nu_{12}$", "true_val": _cfg_get(config, "problem.material.orthotropic.nu12", None)},
+        ]
+        return meta[:n_vars]
+
+    # Legacy/default analytical plate naming
+    legacy = [
+        {
+            "key": "lambda",
+            "label": r"$\lambda$",
+            "true_val": _cfg_get(config, "problem.material.lmbd", _cfg_get(config, "lmbd", 1.0)),
+        },
+        {
+            "key": "mu",
+            "label": r"$\mu$",
+            "true_val": _cfg_get(config, "problem.material.mu", _cfg_get(config, "mu", 0.5)),
+        },
+    ]
+    return legacy[:n_vars]
+
+
+def _infer_domain_length(config, default=1.0):
+    """Infer square domain length from explicit config value only."""
+    geom_len = _cfg_get(config, "problem.geometry.length", None)
+    if geom_len is not None:
+        return float(geom_len)
+    return float(default)
+
+
 def compute_metrics_from_history(losshistory, config):
     """
     Derive named metrics from LossHistory object.
@@ -114,22 +177,35 @@ def process_results(results, exact_solution_fn, plot_fields=None):
         var_hist = np.array(var_cb.history)
         if var_hist.ndim == 1: 
             var_hist = var_hist.reshape(1, -1)
-        vars_history["lambda"] = {"steps": var_hist[:, 0], "values": var_hist[:, 1]}
-        vars_history["mu"] = {"steps": var_hist[:, 0], "values": var_hist[:, 2]}
+        n_vars = max(var_hist.shape[1] - 1, 0)
+        var_meta = _infer_variable_meta(config, n_vars)
+        for idx, meta in enumerate(var_meta, start=1):
+            if idx >= var_hist.shape[1]:
+                continue
+            vars_history[meta["key"]] = {
+                "steps": var_hist[:, 0],
+                "values": var_hist[:, idx],
+                "label": meta["label"],
+                "true_val": meta["true_val"],
+            }
 
     # Prepare mesh grid
     ngrid = int(np.sqrt(fields_dict[next(iter(fields_dict))].shape[1])) if fields_dict else 100
-    x_lin = np.linspace(0, 1, ngrid)
-    Xmesh, Ymesh = np.meshgrid(x_lin, x_lin, indexing="ij")
+    domain_len = _infer_domain_length(config, default=1.0)
+    x_lin = np.linspace(0, float(domain_len), ngrid)
+    y_lin = np.linspace(0, float(domain_len), ngrid)
+    Xmesh, Ymesh = np.meshgrid(x_lin, y_lin, indexing="ij")
 
     # Field names and exact solution
     all_field_names = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
     field_names = [f for f in (plot_fields or all_field_names) if f in fields_dict]
     
     # Compute exact solution for reference
-    lmbd, mu, Q = config.get("lmbd", 1.0), config.get("mu", 0.5), config.get("Q", 4.0)
-    net_type = config.get("net_type", "SPINN")
-    X_input = [x_lin.reshape(-1, 1)] * 2 if net_type == "SPINN" else np.stack((Xmesh.ravel(), Ymesh.ravel()), axis=1)
+    lmbd = _cfg_get(config, "problem.material.lmbd", _cfg_get(config, "lmbd", 1.0))
+    mu = _cfg_get(config, "problem.material.mu", _cfg_get(config, "mu", 0.5))
+    Q = _cfg_get(config, "problem.material.Q", _cfg_get(config, "Q", 4.0))
+    net_type = _cfg_get(config, "model.net_type", _cfg_get(config, "net_type", "SPINN"))
+    X_input = [x_lin.reshape(-1, 1), y_lin.reshape(-1, 1)] if net_type == "SPINN" else np.stack((Xmesh.ravel(), Ymesh.ravel()), axis=1)
     exact_vals = exact_solution_fn(X_input, lmbd, mu, Q, net_type)
     
     fields_init = {
@@ -238,22 +314,25 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
     run_artists = {"var_artists": {}, "metrics_artists": {}, "field_artists": []}
     
     if o["show_metrics"]:
-        lmbd_true, mu_true = config.get("lmbd", 1.0), config.get("mu", 0.5)
-        get_hist = lambda name: (vars_history[name]["steps"], vars_history[name]["values"]) if name in vars_history else (steps, np.zeros_like(steps))
-        
         has_variables = False
-        var_colors = KUL_CYCLE[1:3]
-        for row, (var, true_val, lbl, clr) in enumerate([("lambda", lmbd_true, r"$\lambda$", var_colors[0]), ("mu", mu_true, r"$\mu$", var_colors[1])]):
+        var_colors = ["C1", "C2"]
+        var_items = list(vars_history.items())[:2]
+        for row in range(2):
             ax_var = ax[row, 0]
             ax_var.set_box_aspect(1)  # Square aspect ratio
-            if var not in vars_history:
+            if row >= len(var_items):
                 ax_var.set_visible(False)
             else:
                 has_variables = True
-                s, v = get_hist(var)
-                art = init_parameter_evolution(ax_var, s, v, true_val=true_val, label=lbl, color=clr, 
+                var_name, var_data = var_items[row]
+                s = var_data.get("steps", steps)
+                v = var_data.get("values", np.zeros_like(steps))
+                lbl = var_data.get("label", var_name)
+                true_val = var_data.get("true_val", None)
+                clr = var_colors[row % len(var_colors)]
+                art = init_parameter_evolution(ax_var, s, v, true_val=true_val, label=lbl, color=clr,
                                                show_xlabel=False, step_type=step_type, time_unit=time_unit)
-                run_artists["var_artists"][var] = art
+                run_artists["var_artists"][var_name] = art
                 update_parameter_evolution(current_step, art)
 
         # Metrics in last row of column 0
@@ -678,7 +757,19 @@ def plot_metrics_comparison(results_dict, metric_name="L2 Error", run_names=None
         yscale: 'log', 'linear', or None (auto-select based on metric)
     """
     data_dict = {}
-    is_variable = metric_name.lower() in ["lambda", "lmbd", "mu"]
+    metric_l = metric_name.lower()
+    variable_index = {
+        "lambda": 1,
+        "lmbd": 1,
+        "mu": 2,
+        "e": 1,
+        "nu": 2,
+        "e1": 1,
+        "e2": 2,
+        "g12": 3,
+        "nu12": 4,
+    }
+    is_variable = metric_l in variable_index
     
     # Set default yscale if not provided
     if yscale is None:
@@ -694,8 +785,8 @@ def plot_metrics_comparison(results_dict, metric_name="L2 Error", run_names=None
             if var_cb and var_cb.history:
                 var_hist = np.array(var_cb.history)
                 steps = var_hist[:, 0]
-                # Index 1 is lambda, 2 is mu (assuming standard callback structure)
-                idx = 1 if metric_name.lower() in ["lambda", "lmbd"] else 2
+                # Index 0 is training step; variables start at index 1
+                idx = variable_index[metric_l]
                 if var_hist.shape[1] > idx:
                     values = var_hist[:, idx]
         else:
@@ -736,6 +827,12 @@ def plot_metrics_comparison(results_dict, metric_name="L2 Error", run_names=None
         "lambda": r"$\lambda$",
         "lmbd": r"$\lambda$",
         "mu": r"$\mu$",
+        "E": r"$E$",
+        "nu": r"$\nu$",
+        "E1": r"$E_1$",
+        "E2": r"$E_2$",
+        "G12": r"$G_{12}$",
+        "nu12": r"$\nu_{12}$",
     }
     if ylabel is None:
         ylabel = DEFAULT_LATEX_NAMES.get(metric_name, metric_name) 

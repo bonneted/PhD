@@ -35,14 +35,28 @@ def _to_numpy(value):
 
 def _dataset_filename_from_cfg(cfg: DictConfig) -> str:
     law = str(cfg.problem.material.law).lower()
-    dataset_cfg = cfg.problem.reference.dataset
+    length = OmegaConf.select(cfg, "problem.geometry.length", default=None)
+    if length is None:
+        raise ValueError("problem.geometry.length must be set in config for side_loaded_plate.")
+
+    length_key = int(round(float(length)))
+    dataset_cfg = OmegaConf.select(cfg, f"problem.reference.dataset_by_length.{law}", default=None)
+    if dataset_cfg is None:
+        raise ValueError(f"No dataset mapping found for material law '{law}'.")
+
+    dataset_name = None
     if isinstance(dataset_cfg, (dict, DictConfig)):
-        if law not in dataset_cfg:
-            raise ValueError(f"No dataset configured for material law '{law}'")
-        dataset_name = str(dataset_cfg[law])
-    else:
-        dataset_name = str(dataset_cfg)
-    return dataset_name
+        dataset_name = dataset_cfg.get(length_key, None)
+        if dataset_name is None:
+            dataset_name = dataset_cfg.get(str(length_key), None)
+
+    if dataset_name is None:
+        raise ValueError(
+            f"No FEM dataset configured for material law '{law}' and geometry.length={length_key}. "
+            "Update problem.reference.dataset_by_length in side_loaded_plate config."
+        )
+
+    return str(dataset_name)
 
 
 def _dataset_path_from_cfg(cfg: DictConfig) -> Path:
@@ -243,8 +257,9 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
 
     L = OmegaConf.select(cfg, "problem.geometry.length", default=None)
     if L is None:
-        L = float(max(x_grid.max(), y_grid.max()))
+        raise ValueError("problem.geometry.length must be set in config for side_loaded_plate.")
     L = float(L)
+    cfg.problem.geometry.length = L
 
     m = float(cfg.problem.loading.m)
     b = float(cfg.problem.loading.b)
