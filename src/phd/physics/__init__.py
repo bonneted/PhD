@@ -29,7 +29,11 @@ from .mechanics import (
     make_pde,
 )
 
-from .utils import transform_coords
+from .utils import (
+    transform_coords,
+    compute_loss_weight_grad_norm_factors,
+    apply_loss_weight_grad_norm,
+)
 
 __all__ = [
     "jacobian",
@@ -44,4 +48,6 @@ __all__ = [
     "make_output_field_fn",
     "make_pde",
     "transform_coords",
+    "compute_loss_weight_grad_norm_factors",
+    "apply_loss_weight_grad_norm",
 ]

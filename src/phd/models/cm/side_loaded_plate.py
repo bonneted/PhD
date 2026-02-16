@@ -17,6 +17,7 @@ from phd.io import save_run_data as _save_run_data
 from phd.io import create_interpolation_fn
 from phd.io.utils import ResultsManager
 from phd.physics import make_pde, strain_from_output, transform_coords
+from phd.physics.utils import compute_loss_weight_grad_norm_factors, apply_loss_weight_grad_norm
 from phd.plot.plot_cm import (
     animate,
     init_plot as _init_plot,
@@ -281,6 +282,7 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
     lr_decay = OmegaConf.to_object(cfg.training.lr_decay) if cfg.training.lr_decay else None
     num_domain = cfg.training.num_domain
     bc_type = cfg.training.bc_type
+    loss_weight_grad_norm = bool(OmegaConf.select(cfg, "training.loss_weight_grad_norm", default=False))
     log_every = cfg.training.log_every
     generate_video = cfg.training.generate_video
 
@@ -396,6 +398,7 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
         pde_fn = _pde_fn_fixed
 
     bcs = []
+    X_obs_input = None
 
     if task == "inverse":
         meas_type = str(cfg.task.inverse.measurements.type)
@@ -459,6 +462,18 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
             )
 
     n_outputs = 5 if formulation == "mixed" else 2
+    n_losses = n_residuals + len(bcs)
+
+    cfg_loss_weights = OmegaConf.select(cfg, "training.loss_weights", default=None)
+    if cfg_loss_weights is None:
+        base_loss_weights = [1.0] * n_losses
+    else:
+        base_loss_weights = [float(w) for w in cfg_loss_weights]
+        if len(base_loss_weights) != n_losses:
+            raise ValueError(
+                f"training.loss_weights must have length {n_losses} (got {len(base_loss_weights)}). "
+                f"Expected: n_residuals({n_residuals}) + n_bcs({len(bcs)})."
+            )
 
     solution_fn = lambda x: ref["solution_interp"](x)[:, :n_outputs]
     data = dde.data.PDE(
@@ -576,8 +591,41 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
         lr=lr,
         decay=lr_decay,
         metrics=["l2 relative error"],
+        loss_weights=base_loss_weights,
         external_trainable_variables=external_trainable_variables if external_trainable_variables else None,
     )
+
+    if loss_weight_grad_norm:
+        # Build anchor list matching DeepXDE losses order: [BC losses..., PDE losses]
+        bc_anchors = [X_obs_input] * len(bcs) if len(bcs) > 0 and X_obs_input is not None else []
+
+        n_anchor = max(10, int(np.sqrt(num_domain)))
+        x_anchor = np.linspace(0, L, n_anchor)
+        y_anchor = np.linspace(0, L, n_anchor)
+        pde_anchor = _reference_inputs(net_type, x_anchor, y_anchor)
+        all_anchors = bc_anchors + [pde_anchor]
+
+        grad_factors, grad_norms = compute_loss_weight_grad_norm_factors(
+            model=model,
+            anchors=all_anchors,
+            n_losses=n_losses,
+        )
+        scaled_loss_weights = apply_loss_weight_grad_norm(base_loss_weights, grad_factors.tolist())
+
+        print("Applying loss grad-norm scaling:")
+        print(f"  base_loss_weights={base_loss_weights}")
+        print(f"  grad_norms={grad_norms.tolist()}")
+        print(f"  grad_factors={grad_factors.tolist()}")
+        print(f"  scaled_loss_weights={scaled_loss_weights}")
+
+        model.compile(
+            "adam",
+            lr=lr,
+            decay=lr_decay,
+            metrics=["l2 relative error"],
+            loss_weights=scaled_loss_weights,
+            external_trainable_variables=external_trainable_variables if external_trainable_variables else None,
+        )
 
     start_time = time.time()
     losshistory, train_state = model.train(iterations=n_iter, callbacks=callbacks, display_every=log_every)

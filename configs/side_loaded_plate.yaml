@@ -75,6 +75,19 @@ training:
   lr: 1.0e-3
   num_domain: 10000
   bc_type: hard
+  # Length must be n_residuals + n_bcs
+  # For mixed+inverse(strain): 5 PDE residuals + 3 measurement losses = 8
+  loss_weights:
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+  # If true, multiply loss_weights by grad-norm factors (legacy pinn_inverse_ortho behavior)
+  loss_weight_grad_norm: false
   coord_normalization: false
   stress_bc: true
 
