@@ -568,7 +568,7 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
         callbacks.append(attention_weight_logger)
 
     fields_logger = None
-    log_fields = list(cfg.problem.log_fields) if cfg.problem.log_fields else ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
+    log_fields = list(cfg.problem.log_fields) if len(cfg.problem.log_fields) > 0 else None
     if log_fields:
         x_plot = np.linspace(0, L, 100)
         y_plot = np.linspace(0, L, 100)
