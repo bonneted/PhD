@@ -17,7 +17,10 @@ from phd.io import save_run_data as _save_run_data
 from phd.io import create_interpolation_fn
 from phd.io.utils import ResultsManager
 from phd.physics import make_pde, strain_from_output, transform_coords
-from phd.physics.utils import compute_loss_weight_grad_norm_factors, apply_loss_weight_grad_norm
+from phd.physics.utils import (
+    apply_loss_weight_grad_norm,
+    compute_loss_weight_factors,
+)
 from phd.plot.plot_cm import (
     animate,
     init_plot as _init_plot,
@@ -267,9 +270,8 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
 
     coord_normalization = bool(OmegaConf.select(cfg, "training.coord_normalization", default=False))
     stress_bc = bool(OmegaConf.select(cfg, "training.stress_bc", default=True))
-    x_max = 1.0 if coord_normalization else L
-    m_eff = m * L if coord_normalization else m
-    side_load_fn = lambda y: m_eff * y + b
+    x_max = L
+    side_load_fn = lambda y: m * y + b
 
     n_hidden = cfg.model.architecture.n_hidden
     width = cfg.model.architecture.width
@@ -282,7 +284,13 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
     lr_decay = OmegaConf.to_object(cfg.training.lr_decay) if cfg.training.lr_decay else None
     num_domain = cfg.training.num_domain
     bc_type = cfg.training.bc_type
-    loss_weight_grad_norm = bool(OmegaConf.select(cfg, "training.loss_weight_grad_norm", default=False))
+    loss_norm_scheme = str(
+        OmegaConf.select(cfg, "training.loss_normalization.scheme", default="none")
+    ).lower()
+    if loss_norm_scheme not in {"none", "grad_norm", "ntk_norm"}:
+        raise ValueError(
+            "training.loss_normalization.scheme must be one of {'none', 'grad_norm', 'ntk_norm'}."
+        )
     log_every = cfg.training.log_every
     generate_video = cfg.training.generate_video
 
@@ -595,7 +603,7 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
         external_trainable_variables=external_trainable_variables if external_trainable_variables else None,
     )
 
-    if loss_weight_grad_norm:
+    if loss_norm_scheme != "none":
         # Build anchor list matching DeepXDE losses order: [BC losses..., PDE losses]
         bc_anchors = [X_obs_input] * len(bcs) if len(bcs) > 0 and X_obs_input is not None else []
 
@@ -605,17 +613,22 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
         pde_anchor = _reference_inputs(net_type, x_anchor, y_anchor)
         all_anchors = bc_anchors + [pde_anchor]
 
-        grad_factors, grad_norms = compute_loss_weight_grad_norm_factors(
+        model.train(iterations=10, callbacks=[])  # Warm-up step to initialize gradients
+        weight_type = "grad" if loss_norm_scheme == "grad_norm" else "ntk"
+        factors, stats = compute_loss_weight_factors(
             model=model,
             anchors=all_anchors,
             n_losses=n_losses,
+            weight_type=weight_type,
         )
-        scaled_loss_weights = apply_loss_weight_grad_norm(base_loss_weights, grad_factors.tolist())
+        stats_name = "grad_norms" if weight_type == "grad" else "ntk_traces"
 
-        print("Applying loss grad-norm scaling:")
+        scaled_loss_weights = apply_loss_weight_grad_norm(base_loss_weights, factors.tolist())
+
+        print(f"Applying loss weighting scheme: {loss_norm_scheme}")
         print(f"  base_loss_weights={base_loss_weights}")
-        print(f"  grad_norms={grad_norms.tolist()}")
-        print(f"  grad_factors={grad_factors.tolist()}")
+        print(f"  {stats_name}={stats.tolist()}")
+        print(f"  factors={factors.tolist()}")
         print(f"  scaled_loss_weights={scaled_loss_weights}")
 
         model.compile(

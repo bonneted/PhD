@@ -31,7 +31,7 @@ from .mechanics import (
 
 from .utils import (
     transform_coords,
-    compute_loss_weight_grad_norm_factors,
+    compute_loss_weight_factors,
     apply_loss_weight_grad_norm,
 )
 
@@ -48,6 +48,6 @@ __all__ = [
     "make_output_field_fn",
     "make_pde",
     "transform_coords",
-    "compute_loss_weight_grad_norm_factors",
+    "compute_loss_weight_factors",
     "apply_loss_weight_grad_norm",
 ]
