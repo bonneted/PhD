@@ -77,15 +77,7 @@ training:
   bc_type: hard
   # Length must be n_residuals + n_bcs
   # For mixed+inverse(strain): 5 PDE residuals + 3 measurement losses = 8
-  loss_weights:
-    - 1.0
-    - 1.0
-    - 1.0
-    - 1.0
-    - 1.0
-    - 1.0
-    - 1.0
-    - 1.0
+  loss_weights: none
   # Loss weighting selector: none | grad_norm | ntk_norm
   loss_normalization:
     scheme: none

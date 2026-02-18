@@ -541,8 +541,8 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
     n_outputs = 5 if formulation == "mixed" else 2
     n_losses = n_residuals + len(bcs)
 
-    cfg_loss_weights = OmegaConf.select(cfg, "training.loss_weights", default=None)
-    if cfg_loss_weights is None:
+    cfg_loss_weights = OmegaConf.select(cfg, "training.loss_weights", default="none")
+    if cfg_loss_weights == 'none':
         base_loss_weights = [1.0] * n_losses
     else:
         base_loss_weights = [float(w) for w in cfg_loss_weights]
@@ -792,13 +792,17 @@ def extract_fields_at_iterations(results, iterations, field_names=None):
     y_lin = ref["y_grid"]
     X, Y = np.meshgrid(x_lin, y_lin, indexing="ij")
 
-    exact_vals = ref["solution_grid"].reshape(-1, 5)
-    all_field_names = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
-    exact_dict = {
-        fname: exact_vals[:, all_field_names.index(fname)].reshape(X.shape)
-        for fname in field_names
-        if fname in all_field_names
-    }
+    solution_vals = ref["solution_grid"].reshape(-1, 5)
+    strain_vals = ref["strain_grid"].reshape(-1, 3)
+
+    exact_solution_fields = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
+    exact_strain_fields = ["Exx", "Eyy", "Exy"]
+    exact_dict = {}
+    for fname in field_names:
+        if fname in exact_solution_fields:
+            exact_dict[fname] = solution_vals[:, exact_solution_fields.index(fname)].reshape(X.shape)
+        elif fname in exact_strain_fields:
+            exact_dict[fname] = strain_vals[:, exact_strain_fields.index(fname)].reshape(X.shape)
 
     pred_dict = {fname: [] for fname in field_names}
     for it in resolved_iters:
@@ -819,7 +823,16 @@ def extract_fields_at_iterations(results, iterations, field_names=None):
 
 def _plot_exact_solution_from_cfg(cfg):
     def wrapper(X_input, lmbd=None, mu=None, Q=None, net_type="SPINN"):
-        return exact_solution(X_input, lmbd=lmbd, mu=mu, Q=Q, net_type=net_type, cfg=cfg)
+        ref = _make_reference_interpolator(cfg)
+        solution_vals = ref["solution_interp"](X_input)
+        strain_vals = ref["strain_interp"](X_input)
+
+        if solution_vals.ndim == 1:
+            solution_vals = solution_vals[:, np.newaxis]
+        if strain_vals.ndim == 1:
+            strain_vals = strain_vals[:, np.newaxis]
+
+        return np.hstack((solution_vals, strain_vals))
 
     return wrapper
 

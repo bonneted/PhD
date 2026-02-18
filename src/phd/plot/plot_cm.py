@@ -29,7 +29,8 @@ from phd.plot.plot_util import (
 # LaTeX names for CM fields
 LATEX_FIELD_NAMES = {
     "Ux": r"$u_x$", "Uy": r"$u_y$",
-    "Sxx": r"$\sigma_{xx}$", "Syy": r"$\sigma_{yy}$", "Sxy": r"$\sigma_{xy}$"
+    "Sxx": r"$\sigma_{xx}$", "Syy": r"$\sigma_{yy}$", "Sxy": r"$\sigma_{xy}$",
+    "Exx": r"$\varepsilon_{xx}$", "Eyy": r"$\varepsilon_{yy}$", "Exy": r"$\varepsilon_{xy}$",
 }
 
 
@@ -211,7 +212,7 @@ def process_results(results, exact_solution_fn, plot_fields=None):
     Xmesh, Ymesh = np.meshgrid(x_lin, y_lin, indexing="ij")
 
     # Field names and exact solution
-    all_field_names = ["Ux", "Uy", "Sxx", "Syy", "Sxy"]
+    all_field_names = ["Ux", "Uy", "Sxx", "Syy", "Sxy", "Exx", "Eyy", "Exy"]
     field_names = [f for f in (plot_fields or all_field_names) if f in fields_dict]
     
     # Compute exact solution for reference
@@ -220,15 +221,24 @@ def process_results(results, exact_solution_fn, plot_fields=None):
     Q = _cfg_get(config, "problem.material.Q", _cfg_get(config, "Q", 4.0))
     net_type = _cfg_get(config, "model.net_type", _cfg_get(config, "net_type", "SPINN"))
     X_input = [x_lin.reshape(-1, 1), y_lin.reshape(-1, 1)] if net_type == "SPINN" else np.stack((Xmesh.ravel(), Ymesh.ravel()), axis=1)
-    exact_vals = exact_solution_fn(X_input, lmbd, mu, Q, net_type)
-    
-    fields_init = {
-        name: {
-            "data": [exact_vals[:, all_field_names.index(name)].reshape(ngrid, ngrid)],
+    exact_vals = np.asarray(exact_solution_fn(X_input, lmbd, mu, Q, net_type))
+    if exact_vals.ndim == 1:
+        exact_vals = exact_vals[:, np.newaxis]
+
+    n_exact_fields = exact_vals.shape[1]
+    exact_field_order = all_field_names[:n_exact_fields]
+    exact_field_indices = {name: i for i, name in enumerate(exact_field_order)}
+
+    fields_init = {}
+    for name in field_names:
+        if name in exact_field_indices:
+            exact_grid = exact_vals[:, exact_field_indices[name]].reshape(ngrid, ngrid)
+        else:
+            exact_grid = np.full((ngrid, ngrid), np.nan)
+        fields_init[name] = {
+            "data": [exact_grid],
             "title": LATEX_FIELD_NAMES.get(name, name),
         }
-        for name in field_names
-    }
         
     def get_snapshot(idx):
         return {
