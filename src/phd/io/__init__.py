@@ -22,6 +22,9 @@ from .utils import (
     load_field,
     create_interpolation_fn,
     save_df_to_latex,
+    get_side_loaded_plate_dataset_path,
+    load_side_loaded_plate_reference_raw,
+    load_side_loaded_plate_dic_sample,
 )
 
 from .wandb_utils import (
@@ -48,6 +51,9 @@ __all__ = [
     "load_fields",
     "load_field",
     "create_interpolation_fn",
+    "get_side_loaded_plate_dataset_path",
+    "load_side_loaded_plate_reference_raw",
+    "load_side_loaded_plate_dic_sample",
     # Wandb utilities
     "get_sweep_dir",
     "setup_wandb_environment",

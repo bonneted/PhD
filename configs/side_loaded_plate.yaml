@@ -86,8 +86,9 @@ training:
     - 1.0
     - 1.0
     - 1.0
-  # If true, multiply loss_weights by grad-norm factors (legacy pinn_inverse_ortho behavior)
-  loss_weight_grad_norm: false
+  # Loss weighting selector: none | grad_norm | ntk_norm
+  loss_normalization:
+    scheme: none
   coord_normalization: false
   stress_bc: true
 
@@ -108,10 +109,18 @@ task:
 
   inverse:
     measurements:
+      source: fem  # fem or dic
       type: displacement  # displacement or strain
       n_observations:
         x: 10
         y: 10
+      dic:
+        # Relative region [x_min, x_max, y_min, y_max] used for FEM-sampled measurements.
+        # For source=dic, native DIC grid coordinates are used.
+        region: [0.0, 1.0, 0.0, 1.0]
+        # Path can be relative to src/phd/io/dataset (recommended) or absolute.
+        path: side_loaded_plate/dic/0.4MP/0noise
+        sample_id: 0
       noise_ratio: 0.0
 
     # Used when problem.material.law == isotropic

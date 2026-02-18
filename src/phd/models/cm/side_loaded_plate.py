@@ -11,8 +11,10 @@ from omegaconf import DictConfig, OmegaConf
 
 from phd.config import load_config
 from phd.io import FieldSaver, VariableArray, VariableValue
-from phd.io import get_dataset_path
+from phd.io import get_side_loaded_plate_dataset_path
 from phd.io import load_run as _load_run
+from phd.io import load_side_loaded_plate_dic_sample
+from phd.io import load_side_loaded_plate_reference_raw
 from phd.io import save_run_data as _save_run_data
 from phd.io import create_interpolation_fn
 from phd.io.utils import ResultsManager
@@ -65,12 +67,12 @@ def _dataset_filename_from_cfg(cfg: DictConfig) -> str:
 
 def _dataset_path_from_cfg(cfg: DictConfig) -> Path:
     dataset_name = _dataset_filename_from_cfg(cfg)
-    return get_dataset_path(f"side_loaded_plate/{dataset_name}")
+    return get_side_loaded_plate_dataset_path(dataset_name)
 
 
 @lru_cache(maxsize=8)
-def _load_reference_data(dataset_path: str):
-    raw = np.loadtxt(dataset_path)
+def _load_reference_data(dataset_name: str):
+    raw = load_side_loaded_plate_reference_raw(dataset_name)
     coords = raw[:, :2]
     u_val = raw[:, 2:4]
     strain_val = raw[:, 4:7]
@@ -99,8 +101,9 @@ def _load_reference_data(dataset_path: str):
 
 
 def _make_reference_interpolator(cfg: DictConfig):
+    dataset_name = _dataset_filename_from_cfg(cfg)
     dataset_path = str(_dataset_path_from_cfg(cfg))
-    x_grid, y_grid, u_grid, strain_grid, stress_grid, solution_grid = _load_reference_data(dataset_path)
+    x_grid, y_grid, u_grid, strain_grid, stress_grid, solution_grid = _load_reference_data(dataset_name)
 
     transform_fn = lambda x: _to_numpy(transform_coords(x))
 
@@ -241,6 +244,123 @@ def _reference_inputs(net_type: str, x_values: np.ndarray, y_values: np.ndarray)
         return [x_values.reshape(-1, 1), y_values.reshape(-1, 1)]
     xx, yy = np.meshgrid(x_values, y_values, indexing="ij")
     return np.stack((xx.ravel(), yy.ravel()), axis=1)
+
+
+def _make_measurement_inputs_from_region(
+    net_type: str,
+    domain_length: float,
+    n_obs_x: int,
+    n_obs_y: int,
+    relative_region: list[float],
+):
+    if len(relative_region) != 4:
+        raise ValueError("task.inverse.measurements.dic.region must be [x_min, x_max, y_min, y_max].")
+
+    x_min, x_max, y_min, y_max = [float(v) for v in relative_region]
+    if not (0.0 <= x_min < x_max <= 1.0 and 0.0 <= y_min < y_max <= 1.0):
+        raise ValueError(
+            "task.inverse.measurements.dic.region must satisfy 0 <= x_min < x_max <= 1 and 0 <= y_min < y_max <= 1."
+        )
+
+    x_obs = np.linspace(x_min * domain_length, x_max * domain_length, n_obs_x)
+    y_obs = np.linspace(y_min * domain_length, y_max * domain_length, n_obs_y)
+    return _reference_inputs(net_type, x_obs, y_obs)
+
+
+def _load_side_loaded_plate_measurements(
+    cfg: DictConfig,
+    ref: dict,
+    net_type: str,
+    domain_length: float,
+):
+    """Load inverse-measurement inputs/targets from FEM interpolation or DIC dataset."""
+    meas_cfg = cfg.task.inverse.measurements
+    meas_type = str(meas_cfg.type).lower()
+    source = str(OmegaConf.select(meas_cfg, "source", default="fem")).lower()
+    n_obs_x = int(meas_cfg.n_observations.x)
+    n_obs_y = int(meas_cfg.n_observations.y)
+    noise_ratio = float(meas_cfg.noise_ratio)
+
+    if source not in {"fem", "dic"}:
+        raise ValueError("task.inverse.measurements.source must be either 'fem' or 'dic'.")
+    if meas_type not in {"displacement", "strain"}:
+        raise ValueError("task.inverse.measurements.type must be either 'displacement' or 'strain'.")
+
+    if source == "dic":
+        dic_path = str(OmegaConf.select(meas_cfg, "dic.path", default=""))
+        sample_id = int(OmegaConf.select(meas_cfg, "dic.sample_id", default=0))
+        dic_data = load_side_loaded_plate_dic_sample(
+            dic_path=dic_path,
+            sample_id=sample_id,
+            measurement_type=meas_type,
+        )
+        x_obs = dic_data["x_values"].reshape(-1)
+        y_obs = dic_data["y_values"].reshape(-1)
+        X_obs_input = _reference_inputs(net_type, x_obs, y_obs)
+        obs = dic_data["data"]
+    else:
+        dic_region = OmegaConf.select(meas_cfg, "dic.region", default=[0.0, 1.0, 0.0, 1.0])
+        X_obs_input = _make_measurement_inputs_from_region(
+            net_type=net_type,
+            domain_length=domain_length,
+            n_obs_x=n_obs_x,
+            n_obs_y=n_obs_y,
+            relative_region=list(dic_region),
+        )
+        if meas_type == "displacement":
+            obs = ref["solution_interp"](X_obs_input)[:, :2]
+        else:
+            obs = ref["strain_interp"](X_obs_input)
+
+    if noise_ratio > 0:
+        obs = obs + np.random.normal(0.0, noise_ratio * np.std(obs), size=obs.shape)
+
+    return {
+        "type": meas_type,
+        "X_obs_input": X_obs_input,
+        "obs": obs,
+    }
+
+
+def _build_measurement_bcs(net_type: str, measurement_data: dict):
+    meas_type = measurement_data["type"]
+    X_obs_input = measurement_data["X_obs_input"]
+    obs = measurement_data["obs"]
+
+    obs_norms = np.mean(np.abs(obs), axis=0)
+    obs_norms = np.where(obs_norms > 0, obs_norms, 1.0)
+
+    if meas_type == "displacement":
+        return [
+            dde.PointSetOperatorBC(
+                X_obs_input,
+                (obs[:, 0:1] / obs_norms[0]),
+                lambda x, f, x_np: f[0][:, 0:1] / obs_norms[0],
+            ),
+            dde.PointSetOperatorBC(
+                X_obs_input,
+                (obs[:, 1:2] / obs_norms[1]),
+                lambda x, f, x_np: f[0][:, 1:2] / obs_norms[1],
+            ),
+        ]
+
+    return [
+        dde.PointSetOperatorBC(
+            X_obs_input,
+            (obs[:, 0:1] / obs_norms[0]),
+            lambda x, f, x_np: strain_from_output(x, f, net_type)[:, 0:1] / obs_norms[0],
+        ),
+        dde.PointSetOperatorBC(
+            X_obs_input,
+            (obs[:, 1:2] / obs_norms[1]),
+            lambda x, f, x_np: strain_from_output(x, f, net_type)[:, 1:2] / obs_norms[1],
+        ),
+        dde.PointSetOperatorBC(
+            X_obs_input,
+            (obs[:, 2:3] / obs_norms[2]),
+            lambda x, f, x_np: strain_from_output(x, f, net_type)[:, 2:3] / obs_norms[2],
+        ),
+    ]
 
 
 def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
@@ -409,65 +529,14 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
     X_obs_input = None
 
     if task == "inverse":
-        meas_type = str(cfg.task.inverse.measurements.type)
-        n_obs_x = int(cfg.task.inverse.measurements.n_observations.x)
-        n_obs_y = int(cfg.task.inverse.measurements.n_observations.y)
-        noise_ratio = float(cfg.task.inverse.measurements.noise_ratio)
-
-        x_obs = np.linspace(0, L, n_obs_x)
-        y_obs = np.linspace(0, L, n_obs_y)
-        X_obs_input = _reference_inputs(net_type, x_obs, y_obs)
-
-        if meas_type == "displacement":
-            obs = ref["solution_interp"](X_obs_input)[:, :2]
-        elif meas_type == "strain":
-            obs = ref["strain_interp"](X_obs_input)
-        else:
-            raise ValueError(f"Unsupported measurement type: {meas_type}")
-
-        if noise_ratio > 0:
-            obs = obs + np.random.normal(0.0, noise_ratio * np.std(obs), size=obs.shape)
-
-        obs_norms = np.mean(np.abs(obs), axis=0)
-        obs_norms = np.where(obs_norms > 0, obs_norms, 1.0)
-
-        if meas_type == "displacement":
-            bcs.append(
-                dde.PointSetOperatorBC(
-                    X_obs_input,
-                    (obs[:, 0:1] / obs_norms[0]),
-                    lambda x, f, x_np: f[0][:, 0:1] / obs_norms[0],
-                )
-            )
-            bcs.append(
-                dde.PointSetOperatorBC(
-                    X_obs_input,
-                    (obs[:, 1:2] / obs_norms[1]),
-                    lambda x, f, x_np: f[0][:, 1:2] / obs_norms[1],
-                )
-            )
-        else:
-            bcs.append(
-                dde.PointSetOperatorBC(
-                    X_obs_input,
-                    (obs[:, 0:1] / obs_norms[0]),
-                    lambda x, f, x_np: strain_from_output(x, f, net_type)[:, 0:1] / obs_norms[0],
-                )
-            )
-            bcs.append(
-                dde.PointSetOperatorBC(
-                    X_obs_input,
-                    (obs[:, 1:2] / obs_norms[1]),
-                    lambda x, f, x_np: strain_from_output(x, f, net_type)[:, 1:2] / obs_norms[1],
-                )
-            )
-            bcs.append(
-                dde.PointSetOperatorBC(
-                    X_obs_input,
-                    (obs[:, 2:3] / obs_norms[2]),
-                    lambda x, f, x_np: strain_from_output(x, f, net_type)[:, 2:3] / obs_norms[2],
-                )
-            )
+        measurement_data = _load_side_loaded_plate_measurements(
+            cfg=cfg,
+            ref=ref,
+            net_type=net_type,
+            domain_length=L,
+        )
+        X_obs_input = measurement_data["X_obs_input"]
+        bcs.extend(_build_measurement_bcs(net_type=net_type, measurement_data=measurement_data))
 
     n_outputs = 5 if formulation == "mixed" else 2
     n_losses = n_residuals + len(bcs)
@@ -613,7 +682,7 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
         pde_anchor = _reference_inputs(net_type, x_anchor, y_anchor)
         all_anchors = bc_anchors + [pde_anchor]
 
-        model.train(iterations=10, callbacks=[])  # Warm-up step to initialize gradients
+        model.train(iterations=100, callbacks=[])  # Warm-up step to initialize gradients
         weight_type = "grad" if loss_norm_scheme == "grad_norm" else "ntk"
         factors, stats = compute_loss_weight_factors(
             model=model,

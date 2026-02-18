@@ -21,6 +21,12 @@ from scipy.interpolate import RegularGridInterpolator
 import deepxde as dde
 from omegaconf import OmegaConf
 
+from .dataset.utils import (
+    get_side_loaded_plate_dataset_path,
+    load_side_loaded_plate_dic_sample,
+    load_side_loaded_plate_reference_raw,
+)
+
 
 # =============================================================================
 # Interpolation utilities for exact solutions from data
