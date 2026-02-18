@@ -363,6 +363,31 @@ def _build_measurement_bcs(net_type: str, measurement_data: dict):
     ]
 
 
+def _build_stress_integral_bc(
+    net_type: str,
+    domain_length: float,
+    side_load_fn: Callable,
+    n_integral: int = 100,
+):
+    x_integral = np.linspace(0.0, domain_length, n_integral)
+    y_integral = np.linspace(0.0, domain_length, n_integral)
+    integral_points = _reference_inputs(net_type, x_integral, y_integral)
+
+    integral_target = float(np.trapezoid(side_load_fn(y_integral), y_integral))
+    integral_target_array = np.full((n_integral, 1), integral_target)
+
+    def integral_stress(x, outputs, X):
+        if isinstance(x, (list, tuple)):
+            x = transform_coords(x)
+
+        output_vals = outputs[0] if isinstance(outputs, (list, tuple)) else outputs
+        y_grid = x[:, 1].reshape((n_integral, n_integral))
+        sxx_grid = output_vals[:, 2].reshape((n_integral, n_integral))
+        return jnp.trapezoid(sxx_grid, y_grid, axis=1).reshape(-1, 1)
+
+    return dde.PointSetOperatorBC(integral_points, integral_target_array, integral_stress), integral_points
+
+
 def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
     if cfg is None:
         cfg = load_config("side_loaded_plate", overrides=overrides)
@@ -390,8 +415,12 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
 
     coord_normalization = bool(OmegaConf.select(cfg, "training.coord_normalization", default=False))
     stress_bc = bool(OmegaConf.select(cfg, "training.stress_bc", default=True))
+    stress_integral = bool(OmegaConf.select(cfg, "training.stress_integral", default=False))
     x_max = L
     side_load_fn = lambda y: m * y + b
+
+    if stress_integral and formulation != "mixed":
+        raise ValueError("training.stress_integral=true is only supported with model.formulation='mixed'.")
 
     n_hidden = cfg.model.architecture.n_hidden
     width = cfg.model.architecture.width
@@ -526,6 +555,7 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
         pde_fn = _pde_fn_fixed
 
     bcs = []
+    bcs_anchors = []
     X_obs_input = None
 
     if task == "inverse":
@@ -536,7 +566,18 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
             domain_length=L,
         )
         X_obs_input = measurement_data["X_obs_input"]
-        bcs.extend(_build_measurement_bcs(net_type=net_type, measurement_data=measurement_data))
+        measurement_bcs = _build_measurement_bcs(net_type=net_type, measurement_data=measurement_data)
+        bcs.extend(measurement_bcs)
+        bcs_anchors.extend([X_obs_input] * len(measurement_bcs))
+
+    if stress_integral:
+        stress_integral_bc, stress_integral_input = _build_stress_integral_bc(
+            net_type=net_type,
+            domain_length=L,
+            side_load_fn=side_load_fn,
+        )
+        bcs.append(stress_integral_bc)
+        bcs_anchors.append(stress_integral_input)
 
     n_outputs = 5 if formulation == "mixed" else 2
     n_losses = n_residuals + len(bcs)
@@ -674,7 +715,7 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
 
     if loss_norm_scheme != "none":
         # Build anchor list matching DeepXDE losses order: [BC losses..., PDE losses]
-        bc_anchors = [X_obs_input] * len(bcs) if len(bcs) > 0 and X_obs_input is not None else []
+        bc_anchors = bcs_anchors
 
         n_anchor = max(10, int(np.sqrt(num_domain)))
         x_anchor = np.linspace(0, L, n_anchor)

@@ -76,13 +76,14 @@ training:
   num_domain: 10000
   bc_type: hard
   # Length must be n_residuals + n_bcs
-  # For mixed+inverse(strain): 5 PDE residuals + 3 measurement losses = 8
+  # For mixed+inverse(strain): 5 PDE residuals + 3 measurement losses (+1 if stress_integral) = 8 or 9
   loss_weights: none
   # Loss weighting selector: none | grad_norm | ntk_norm
   loss_normalization:
     scheme: none
   coord_normalization: false
   stress_bc: true
+  stress_integral: false
 
   lr_decay: null
 
