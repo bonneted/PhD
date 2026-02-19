@@ -20,8 +20,12 @@ problem:
   reference:
     # Relative paths are resolved from src/phd/io/dataset
     dataset_by_material:
-      isotropic: side_loaded_plate/100x100mm.dat
-      orthotropic: side_loaded_plate/100x100mm_ortho.dat
+      isotropic: deep_notched/isotropic_100x100.dat
+      orthotropic:
+        by_theta_deg:
+          0.0: deep_notched/orthotropic_100x100_0.0deg.dat
+          45.0: deep_notched/orthotropic_100x100_45.0deg.dat
+        default: deep_notched/orthotropic_100x100_45.0deg.dat
 
   material:
     law: isotropic  # isotropic or orthotropic

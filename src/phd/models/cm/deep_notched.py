@@ -43,10 +43,38 @@ def _dataset_filename_from_cfg(cfg: DictConfig) -> str:
     law = str(cfg.problem.material.law).lower()
     dataset_cfg = OmegaConf.select(cfg, "problem.reference.dataset_by_material", default=None)
 
+    def _theta_from_cfg() -> float:
+        return float(OmegaConf.select(cfg, "problem.material.orthotropic.theta_deg", default=0.0))
+
+    def _select_theta_dataset(theta_map) -> Optional[str]:
+        if theta_map is None or not isinstance(theta_map, (dict, DictConfig)):
+            return None
+        theta = _theta_from_cfg()
+        best_name = None
+        best_delta = None
+        for key, value in theta_map.items():
+            try:
+                theta_key = float(key)
+            except (TypeError, ValueError):
+                continue
+            delta = abs(theta - theta_key)
+            if best_delta is None or delta < best_delta:
+                best_delta = delta
+                best_name = str(value)
+        return best_name
+
     if dataset_cfg is not None and isinstance(dataset_cfg, (dict, DictConfig)):
-        name = dataset_cfg.get(law, None)
-        if name is not None:
-            return str(name)
+        law_entry = dataset_cfg.get(law, None)
+        if isinstance(law_entry, str):
+            return law_entry
+        if isinstance(law_entry, (dict, DictConfig)):
+            if law == "orthotropic":
+                name = _select_theta_dataset(law_entry.get("by_theta_deg", None))
+                if name is not None:
+                    return name
+            default_name = law_entry.get("default", None)
+            if default_name is not None:
+                return str(default_name)
 
     fallback = OmegaConf.select(cfg, "problem.reference.dataset", default=None)
     if fallback is None:
