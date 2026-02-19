@@ -45,7 +45,7 @@ problem:
     corner_eps: 0.0
     displacement_bc: false
     n_integral: 100
-    n_free: 400
+    n_free: 200
 
   log_fields:
     - Ux
@@ -88,6 +88,7 @@ training:
   loss_weights: none
   loss_normalization:
     scheme: none
+    n_warmup: 100
 
   lr_decay: null
 
@@ -103,21 +104,21 @@ training:
 task:
   type: forward  # forward or inverse
 
+  measurements:
+    enabled: true
+    source: fem  # fem or dic
+    type: displacement  # displacement or strain
+    n_observations:
+      x: 100
+      y: 100
+    dic:
+      region: [0.05, 0.95, 0.20, 0.80]
+      path: side_loaded_plate/dic/0.4MP/0noise
+      sample_id: 0
+    noise_ratio: 0.0
+
   inverse:
     normalize_parameters: true
-
-    measurements:
-      enabled: true
-      source: fem  # fem or dic
-      type: displacement  # displacement or strain
-      n_observations:
-        x: 100
-        y: 100
-      dic:
-        region: [0.0, 1.0, 0.0, 1.0]
-        path: side_loaded_plate/dic/0.4MP/0noise
-        sample_id: 0
-      noise_ratio: 0.0
 
     init_guess:
       isotropic:
