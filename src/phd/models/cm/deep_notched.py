@@ -19,6 +19,10 @@ from phd.io import load_side_loaded_plate_dic_sample
 from phd.io import save_run_data as _save_run_data
 from phd.io.utils import ResultsManager
 from phd.physics import transform_coords
+from phd.physics.utils import (
+    apply_loss_weight_grad_norm,
+    compute_loss_weight_factors,
+)
 from phd.plot.plot_cm import (
     animate,
     init_plot as _init_plot,
@@ -431,12 +435,22 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
     activations = cfg.model.architecture.activations
     initialization = cfg.model.architecture.initialization
     mlp_type = OmegaConf.select(cfg, "model.architecture.mlp_type", default="mlp")
+    ff_enabled = bool(OmegaConf.select(cfg, "model.fourier_features.enabled", default=False))
+    ff_sigma = float(OmegaConf.select(cfg, "model.fourier_features.sigma", default=10.0))
+    ff_n_features = int(OmegaConf.select(cfg, "model.fourier_features.n_features", default=128))
 
     n_iter = int(cfg.training.n_iter)
     lr = float(cfg.training.lr)
     lr_decay = OmegaConf.to_object(cfg.training.lr_decay) if cfg.training.lr_decay else None
     num_domain = int(cfg.training.num_domain)
     num_test = int(OmegaConf.select(cfg, "training.num_test", default=num_domain))
+    loss_norm_scheme = str(
+        OmegaConf.select(cfg, "training.loss_normalization.scheme", default="none")
+    ).lower()
+    if loss_norm_scheme not in {"none", "grad_norm", "ntk_norm"}:
+        raise ValueError(
+            "training.loss_normalization.scheme must be one of {'none', 'grad_norm', 'ntk_norm'}."
+        )
     log_every = int(cfg.training.log_every)
     generate_video = bool(cfg.training.generate_video)
     coord_normalization = bool(cfg.training.coord_normalization)
@@ -528,11 +542,17 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
             if sa_enabled:
                 pde_w = unknowns[0].flatten()
                 mat_w = pde_w if sa_share_weights else unknowns[1].flatten()
-                residuals[0] = pde_w * residuals[0]
-                residuals[1] = pde_w * residuals[1]
-                residuals[2] = mat_w * residuals[2]
-                residuals[3] = mat_w * residuals[3]
-                residuals[4] = mat_w * residuals[4]
+
+                # SA weights are defined on PDE training collocation points (num_domain).
+                # During test/metrics or auxiliary evaluations the residual length can differ
+                # (e.g., num_test), so only apply SA weighting when shapes are compatible.
+                if pde_w.shape[0] == residuals[0].shape[0]:
+                    residuals[0] = pde_w * residuals[0]
+                    residuals[1] = pde_w * residuals[1]
+                if mat_w.shape[0] == residuals[2].shape[0]:
+                    residuals[2] = mat_w * residuals[2]
+                    residuals[3] = mat_w * residuals[3]
+                    residuals[4] = mat_w * residuals[4]
             return residuals
 
         pde_fn = _pde_fn_with_unknowns
@@ -546,6 +566,19 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
         if isinstance(x, (list, tuple)):
             return [x[0] / x_max, x[1] / y_max]
         return x / np.array([x_max, y_max])
+
+    def list_handler(func):
+        def wrapper(x, *args, **kwargs):
+            if isinstance(x, (list, tuple)):
+                return [func(xi.reshape(-1, 1), *args, **kwargs) for xi in x]
+            return func(x, *args, **kwargs)
+
+        return wrapper
+
+    @list_handler
+    def fourier_features_transform(x, sigma=ff_sigma, num_features=ff_n_features):
+        kernel = jax.random.normal(jax.random.PRNGKey(seed), (x.shape[-1], num_features)) * sigma
+        return jnp.concatenate([jnp.cos(jnp.dot(x, kernel)), jnp.sin(jnp.dot(x, kernel))], axis=-1)
 
     u0_cfg = list(cfg.problem.displacement_scale)
     if len(u0_cfg) != 2:
@@ -593,6 +626,7 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
     geom = dde.geometry.Rectangle([0.0, 0.0], [x_max, y_max])
 
     bcs = []
+    bcs_anchors = []
     n_integral = int(OmegaConf.select(cfg, "problem.bc.n_integral", default=100))
     x_integral = np.linspace(0.0, x_max, n_integral)
     y_integral = np.linspace(0.0, y_max, n_integral)
@@ -612,6 +646,7 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
 
     integral_bc = dde.PointSetOperatorBC(x_integral_input, p_top, integral_stress)
     bcs.append(integral_bc)
+    bcs_anchors.append(x_integral_input)
 
     n_free = int(OmegaConf.select(cfg, "problem.bc.n_free", default=400))
     y_free = np.linspace(0.0, y_max, n_free)
@@ -640,19 +675,21 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
     free_bc_left = dde.PointSetOperatorBC(x_free_left_input, 0, free_surface_balance)
     free_bc_right = dde.PointSetOperatorBC(x_free_right_input, 0, free_surface_balance)
     bcs.extend([free_bc_left, free_bc_right])
+    bcs_anchors.extend([x_free_left_input, x_free_right_input])
 
     if task == "inverse" and use_measurements:
         measurement_data = _load_measurements(cfg, ref, net_type)
         measurement_bcs = _build_measurement_bcs(net_type, measurement_data, coord_map)
         bcs.extend(measurement_bcs)
+        bcs_anchors.extend([measurement_data["X_obs_input"]] * len(measurement_bcs))
 
     cfg_loss_weights = OmegaConf.select(cfg, "training.loss_weights", default="none")
     n_losses = 5 + len(bcs)
     if cfg_loss_weights == "none":
-        loss_weights = [1.0] * n_losses
+        base_loss_weights = [1.0] * n_losses
     else:
-        loss_weights = [float(w) for w in cfg_loss_weights]
-        if len(loss_weights) != n_losses:
+        base_loss_weights = [float(w) for w in cfg_loss_weights]
+        if len(base_loss_weights) != n_losses:
             raise ValueError(
                 f"training.loss_weights must have length {n_losses} (5 residuals + {len(bcs)} BCs)."
             )
@@ -676,8 +713,12 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
         layers = [2] + [[width] * 5] * n_hidden + [5]
         net = dde.nn.PFNN(layers, activations, initialization)
 
-    if coord_normalization:
+    if coord_normalization and ff_enabled:
+        net.apply_feature_transform(lambda x: fourier_features_transform(input_scaling(x)))
+    elif coord_normalization:
         net.apply_feature_transform(input_scaling)
+    elif ff_enabled:
+        net.apply_feature_transform(fourier_features_transform)
     net.apply_output_transform(hard_bc)
 
     model = dde.Model(data, net)
@@ -755,9 +796,42 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
         lr=lr,
         decay=lr_decay,
         metrics=["l2 relative error"],
-        loss_weights=loss_weights,
+        loss_weights=base_loss_weights,
         external_trainable_variables=external_trainable_variables if external_trainable_variables else None,
     )
+
+    if loss_norm_scheme != "none":
+        n_anchor = max(10, int(np.sqrt(num_domain)))
+        x_anchor = np.linspace(0.0, x_max, n_anchor)
+        y_anchor = np.linspace(0.0, y_max, n_anchor)
+        pde_anchor = _reference_inputs(net_type, x_anchor, y_anchor)
+        all_anchors = bcs_anchors + [pde_anchor]
+
+        model.train(iterations=100, callbacks=[])
+        weight_type = "grad" if loss_norm_scheme == "grad_norm" else "ntk"
+        factors, stats = compute_loss_weight_factors(
+            model=model,
+            anchors=all_anchors,
+            n_losses=n_losses,
+            weight_type=weight_type,
+        )
+        stats_name = "grad_norms" if weight_type == "grad" else "ntk_traces"
+        scaled_loss_weights = apply_loss_weight_grad_norm(base_loss_weights, factors.tolist())
+
+        print(f"Applying loss weighting scheme: {loss_norm_scheme}")
+        print(f"  base_loss_weights={base_loss_weights}")
+        print(f"  {stats_name}={stats.tolist()}")
+        print(f"  factors={factors.tolist()}")
+        print(f"  scaled_loss_weights={scaled_loss_weights}")
+
+        model.compile(
+            "adam",
+            lr=lr,
+            decay=lr_decay,
+            metrics=["l2 relative error"],
+            loss_weights=scaled_loss_weights,
+            external_trainable_variables=external_trainable_variables if external_trainable_variables else None,
+        )
 
     start_time = time.time()
     losshistory, train_state = model.train(iterations=n_iter, callbacks=callbacks, display_every=log_every)
@@ -832,14 +906,27 @@ def _plot_exact_solution_from_cfg(cfg):
     return wrapper
 
 
+def _plot_mesh_transform_from_cfg(cfg):
+    _, _, coord_map_batch, _ = _build_mapping(cfg)
+
+    def transform(x_points):
+        x_arr = np.asarray(x_points)
+        mapped = coord_map_batch(jnp.asarray(x_arr))
+        return _to_numpy(mapped)
+
+    return transform
+
+
 def init_plot(results, iteration=-1, fig=None, ax=None, **opts):
     exact_fn = _plot_exact_solution_from_cfg(results["config"])
-    return _init_plot(results, exact_fn, iteration=iteration, fig=fig, ax=ax, **opts)
+    mesh_transform = _plot_mesh_transform_from_cfg(results["config"])
+    return _init_plot(results, exact_fn, iteration=iteration, fig=fig, ax=ax, mesh_transform=mesh_transform, **opts)
 
 
 def plot_results(results, iteration=-1, fig=None, ax=None, **opts):
     exact_fn = _plot_exact_solution_from_cfg(results["config"])
-    return _plot_results(results, exact_fn, iteration=iteration, fig=fig, ax=ax, **opts)
+    mesh_transform = _plot_mesh_transform_from_cfg(results["config"])
+    return _plot_results(results, exact_fn, iteration=iteration, fig=fig, ax=ax, mesh_transform=mesh_transform, **opts)
 
 
 __all__ = [
