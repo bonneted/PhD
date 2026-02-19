@@ -140,27 +140,59 @@ def _build_mapping(cfg: DictConfig):
     return mapper, coord_map, coord_map_batch, calc_normal
 
 
+def _infer_reference_grid_shape(cfg: DictConfig, n_points: int) -> tuple[int, int]:
+    grid_shape = OmegaConf.select(cfg, "problem.reference.grid_shape", default=None)
+    if grid_shape is not None:
+        if len(grid_shape) != 2:
+            raise ValueError("problem.reference.grid_shape must be [nx, ny].")
+        nx = int(grid_shape[0])
+        ny = int(grid_shape[1])
+        if nx * ny != n_points:
+            raise ValueError(
+                f"Invalid problem.reference.grid_shape={grid_shape}: nx*ny={nx*ny} does not match number of rows {n_points}."
+            )
+        return nx, ny
+
+    n_side = int(round(np.sqrt(n_points)))
+    if n_side * n_side != n_points:
+        raise ValueError(
+            "Could not infer FEM reference grid shape from number of rows. "
+            "Set problem.reference.grid_shape: [nx, ny] in config."
+        )
+    return n_side, n_side
+
+
 @lru_cache(maxsize=8)
-def _load_reference_data(dataset_path_str: str):
+def _load_reference_data(dataset_path_str: str, x_max: float, y_max: float, grid_shape: Optional[tuple[int, int]] = None):
     raw = np.loadtxt(dataset_path_str)
-    coords = raw[:, :2]
     u_val = raw[:, 2:4]
     strain_val = raw[:, 4:7]
     stress_val = raw[:, 7:10]
 
-    x_grid = np.unique(coords[:, 0])
-    y_grid = np.unique(coords[:, 1])
-    nx, ny = x_grid.size, y_grid.size
+    n_rows = raw.shape[0]
+    if grid_shape is None:
+        n_side = int(round(np.sqrt(n_rows)))
+        if n_side * n_side != n_rows:
+            raise ValueError(
+                "FEM dataset row count is not a perfect square. Provide problem.reference.grid_shape in config."
+            )
+        nx, ny = n_side, n_side
+    else:
+        nx, ny = int(grid_shape[0]), int(grid_shape[1])
+        if nx * ny != n_rows:
+            raise ValueError(
+                f"Invalid FEM grid shape ({nx}, {ny}) for {n_rows} rows in dataset {dataset_path_str}."
+            )
 
-    x_to_i = {float(x): i for i, x in enumerate(x_grid)}
-    y_to_j = {float(y): j for j, y in enumerate(y_grid)}
+    x_grid = np.linspace(0.0, float(x_max), nx)
+    y_grid = np.linspace(0.0, float(y_max), ny)
 
+    # The deep_notched FEM datasets are stored in computational-grid row order,
+    # while first two columns contain mapped coordinates that are not a tensor grid.
+    # Keep old behavior: reconstruct fields on computational (x_grid, y_grid) by order.
     def reshape_on_grid(values: np.ndarray):
         n_comp = values.shape[1]
-        out = np.empty((nx, ny, n_comp), dtype=values.dtype)
-        for row_id, (xv, yv) in enumerate(coords):
-            out[x_to_i[float(xv)], y_to_j[float(yv)], :] = values[row_id, :]
-        return out
+        return values.reshape(ny, nx, n_comp).transpose(1, 0, 2)
 
     u_grid = reshape_on_grid(u_val)
     strain_grid = reshape_on_grid(strain_val)
@@ -179,21 +211,22 @@ def _load_reference_data(dataset_path_str: str):
 
 def _make_reference_interpolator(cfg: DictConfig, coord_map_batch: Callable) -> dict[str, Any]:
     dataset_path = _dataset_path_from_cfg(cfg)
-    raw = _load_reference_data(str(dataset_path))
-
-    transform_fn = lambda x: _to_numpy(coord_map_batch(transform_coords(x)))
+    x_max = float(cfg.problem.geometry.x_max)
+    y_max = float(cfg.problem.geometry.y_max)
+    grid_shape = _infer_reference_grid_shape(cfg, int(np.loadtxt(str(dataset_path)).shape[0]))
+    raw = _load_reference_data(str(dataset_path), x_max, y_max, grid_shape)
 
     solution_interp = create_interpolation_fn(
         raw["x_grid"],
         raw["y_grid"],
         raw["solution_grid"],
-        transform_fn=transform_fn,
+        transform_fn=None,
     )
     strain_interp = create_interpolation_fn(
         raw["x_grid"],
         raw["y_grid"],
         raw["strain_grid"],
-        transform_fn=transform_fn,
+        transform_fn=None,
     )
 
     return {
@@ -353,7 +386,12 @@ def _build_measurement_bcs(net_type: str, measurement_data: dict, coord_map: Cal
 
 
 def _load_measurements(cfg: DictConfig, ref: dict, net_type: str):
-    meas_cfg = cfg.task.inverse.measurements
+    meas_cfg = OmegaConf.select(cfg, "task.measurements", default=None)
+    if meas_cfg is None:
+        raise ValueError(
+            "Measurements requested but task.measurements is missing in config."
+        )
+
     meas_type = str(meas_cfg.type).lower()
     source = str(OmegaConf.select(meas_cfg, "source", default="fem")).lower()
     n_obs_x = int(meas_cfg.n_observations.x)
@@ -364,9 +402,9 @@ def _load_measurements(cfg: DictConfig, ref: dict, net_type: str):
     y_max = float(cfg.problem.geometry.y_max)
 
     if source not in {"fem", "dic"}:
-        raise ValueError("task.inverse.measurements.source must be 'fem' or 'dic'.")
+        raise ValueError("task.measurements.source must be 'fem' or 'dic'.")
     if meas_type not in {"displacement", "strain"}:
-        raise ValueError("task.inverse.measurements.type must be 'displacement' or 'strain'.")
+        raise ValueError("task.measurements.type must be 'displacement' or 'strain'.")
 
     if source == "dic":
         dic_path = str(OmegaConf.select(meas_cfg, "dic.path", default=""))
@@ -482,7 +520,8 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
     log_every = int(cfg.training.log_every)
     generate_video = bool(cfg.training.generate_video)
     coord_normalization = bool(cfg.training.coord_normalization)
-    use_measurements = bool(OmegaConf.select(cfg, "task.inverse.measurements.enabled", default=True))
+    measurements_cfg = OmegaConf.select(cfg, "task.measurements", default=None)
+    use_measurements = bool(OmegaConf.select(measurements_cfg, "enabled", default=False))
 
     sa_enabled = bool(cfg.training.self_attention.enabled)
     sa_init = str(cfg.training.self_attention.init)
@@ -565,11 +604,16 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
         return [momentum_x, momentum_y, stress_x, stress_y, stress_xy]
 
     if external_trainable_variables:
-        def _pde_fn_with_unknowns(x, f, unknowns=external_trainable_variables):
-            residuals = pde_from_params(x, f, params_from_unknowns(unknowns))
+        def _as_flat_array(var):
+            raw = var.value if hasattr(var, "value") else var
+            return jnp.asarray(raw).reshape(-1)
+
+        def _pde_fn_with_unknowns(x, f, unknowns=None):
+            unknown_vars = unknowns if unknowns is not None else external_trainable_variables
+            residuals = pde_from_params(x, f, params_from_unknowns(unknown_vars))
             if sa_enabled:
-                pde_w = unknowns[0].flatten()
-                mat_w = pde_w if sa_share_weights else unknowns[1].flatten()
+                pde_w = _as_flat_array(unknown_vars[0])
+                mat_w = pde_w if sa_share_weights else _as_flat_array(unknown_vars[1])
 
                 # SA weights are defined on PDE training collocation points (num_domain).
                 # During test/metrics or auxiliary evaluations the residual length can differ
@@ -705,7 +749,7 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
     bcs.extend([free_bc_left, free_bc_right])
     bcs_anchors.extend([x_free_left_input, x_free_right_input])
 
-    if task == "inverse" and use_measurements:
+    if use_measurements:
         measurement_data = _load_measurements(cfg, ref, net_type)
         measurement_bcs = _build_measurement_bcs(net_type, measurement_data, coord_map)
         bcs.extend(measurement_bcs)
@@ -835,6 +879,7 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
         pde_anchor = _reference_inputs(net_type, x_anchor, y_anchor)
         all_anchors = bcs_anchors + [pde_anchor]
 
+        n_warmup = cfg.training.loss_normalization.n_warmup
         model.train(iterations=100, callbacks=[])
         weight_type = "grad" if loss_norm_scheme == "grad_norm" else "ntk"
         factors, stats = compute_loss_weight_factors(
