@@ -492,11 +492,13 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
     step_type = o["step_type"]
     time_unit = o["time_unit"]
     elapsed_time = results.get("runtime_metrics", {}).get("elapsed_time", None)
+    step_scale = 1.0
     if step_type == "time" and elapsed_time is not None:
         # Convert iteration steps to time
         time_scale = elapsed_time / steps[-1] if steps[-1] > 0 else 1.0
         if time_unit == "min":
             time_scale /= 60
+        step_scale = time_scale
         steps = steps * time_scale
         metrics["steps"] = metrics["steps"] * time_scale
         for var_name in vars_history:
@@ -546,6 +548,8 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
 
         if side_panel == "weights":
             weight_steps, weight_hist = _extract_variable_array_history(results)
+            if weight_steps is not None and step_scale != 1.0:
+                weight_steps = weight_steps * step_scale
             x_min_w, x_max_w = float(np.nanmin(xe)), float(np.nanmax(xe))
             y_min_w, y_max_w = float(np.nanmin(ye)), float(np.nanmax(ye))
             pde_grid_hist = _interpolate_weight_history_to_grid(
@@ -570,7 +574,7 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
                 has_top_panel = True
                 current_grid = grid_hist[w_idx]
                 art = plot_field(ax_w, mx, my, current_grid, title=title_txt, cmap="Blues", plot_contours=False)
-                add_colorbar(fig, ax_w, art["im"], location="left", shift=0.01)
+                add_colorbar(fig, ax_w, art["im"], location="left", size=0.005)
                 run_artists["weight_artists"][name] = {
                     "im": art["im"],
                     "history": grid_hist,
