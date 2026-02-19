@@ -7,6 +7,8 @@ from .mapping import (
     setAxisLabel,
     visualize2D,
     checkGeo,
+    geometry_mapping,
+    deep_notched,
 )
 
 __all__ = [
@@ -17,4 +19,6 @@ __all__ = [
     "setAxisLabel",
     "visualize2D",
     "checkGeo",
+    "geometry_mapping",
+    "deep_notched",
 ]

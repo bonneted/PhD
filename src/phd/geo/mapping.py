@@ -1,3 +1,13 @@
+"""Geometry mapping utilities.
+
+This module keeps the original low-level mesh utilities (`hcubeMesh`, plotting helpers)
+and adds a compact class API:
+- `geometry_mapping`: base class for cached mapping generation/loading.
+- `deep_notched`: deep-notched plate mapping with configurable `(nx, ny)` resolution.
+
+Mappings are saved under `src/phd/geo/dataset` so repeated calls can reuse existing files.
+"""
+
 errMessageJoint='The geometry is not closed!'
 errMessageParallel='The parallel sides do not have the same number of node!'
 errMessageXYShape='The x y shapes do not have match each other!'
@@ -18,6 +28,7 @@ from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 # import torch
 
 def np2cuda(myList):
@@ -270,4 +281,144 @@ class hcubeMesh(object):
 		self.J_ho=self.dxdxi_ho*self.dydeta_ho-\
 		          self.dxdeta_ho*self.dydxi_ho
 		self.Jinv_ho=1/self.J_ho
+
+
+class geometry_mapping:
+	"""Base class for geometry-to-computational mapping generation and caching."""
+
+	def __init__(self, dataset_dir=None, h=0.01, tol_mesh=1e-10, tol_joint=1e-2):
+		if dataset_dir is None:
+			dataset_dir = Path(__file__).parent / "dataset"
+		self.dataset_dir = Path(dataset_dir)
+		self.h = h
+		self.tol_mesh = tol_mesh
+		self.tol_joint = tol_joint
+
+	def mapping_filename(self, nx, ny):
+		return f"{int(nx)}x{int(ny)}.txt"
+
+	def mapping_path(self, nx, ny):
+		return self.dataset_dir / self.mapping_filename(nx, ny)
+
+	def _build_boundaries(self, nx, ny):
+		raise NotImplementedError("Subclasses must implement _build_boundaries(nx, ny).")
+
+	def create_mapping(self, nx, ny, force_recompute=False, plot=False):
+		"""Create or load mapping points for the given resolution (nx, ny)."""
+		path = self.mapping_path(nx, ny)
+		if path.exists() and not force_recompute:
+			return np.loadtxt(path)
+
+		self.dataset_dir.mkdir(parents=True, exist_ok=True)
+		bounds = self._build_boundaries(nx, ny)
+
+		mesh = hcubeMesh(
+			bounds["leftX"], bounds["leftY"],
+			bounds["rightX"], bounds["rightY"],
+			bounds["lowX"], bounds["lowY"],
+			bounds["upX"], bounds["upY"],
+			self.h,
+			plotFlag=plot,
+			saveFlag=False,
+			tolMesh=self.tol_mesh,
+			tolJoint=self.tol_joint,
+		)
+
+		data = np.column_stack((mesh.x.reshape(-1), mesh.y.reshape(-1)))
+		np.savetxt(path, data, delimiter=" ", fmt="%1.16f")
+		return data
+
+	def load_mapping(self, nx, ny):
+		"""Load mapping points, creating them if missing."""
+		path = self.mapping_path(nx, ny)
+		if not path.exists():
+			return self.create_mapping(nx, ny)
+		return np.loadtxt(path)
+
+	def get_coordinate_maps(self, nx, ny):
+		"""Return (X_map, Y_map) arrays shaped for coord interpolation."""
+		data = self.load_mapping(nx, ny)
+		x_map = data[:, 0].reshape((ny, nx)).T
+		y_map = data[:, 1].reshape((ny, nx)).T
+		return x_map, y_map
+
+	def plot_mapping(self, nx, ny, ax=None, **scatter_kwargs):
+		"""Quick scatter plot of cached/generated mapping points."""
+		data = self.load_mapping(nx, ny)
+		if ax is None:
+			_, ax = plt.subplots(1, 1, figsize=(6, 6))
+		ax.scatter(data[:, 0], data[:, 1], s=scatter_kwargs.pop("s", 3), **scatter_kwargs)
+		ax.set_aspect("equal", "box")
+		ax.set_title(f"Mapping points ({nx}x{ny})")
+		return ax
+
+
+class deep_notched(geometry_mapping):
+	"""Deep-notched plate geometry mapping generator."""
+
+	def __init__(
+		self,
+		x_max=100.0,
+		y_max=100.0,
+		notch_diameter=50.0,
+		notch_height=50.0,
+		dataset_dir=None,
+		h=0.01,
+		tol_mesh=1e-10,
+		tol_joint=1e-2,
+	):
+		if dataset_dir is None:
+			dataset_dir = Path(__file__).parent / "dataset" / "deep_notched"
+		super().__init__(dataset_dir=dataset_dir, h=h, tol_mesh=tol_mesh, tol_joint=tol_joint)
+		self.x_max = float(x_max)
+		self.y_max = float(y_max)
+		self.notch_diameter = float(notch_diameter)
+		self.notch_height = float(notch_height)
+
+	def _build_boundaries(self, nx, ny):
+		nx = int(nx)
+		ny = int(ny)
+
+		n_arc = nx
+		n_linear = (ny - (n_arc - 2)) / 2
+		if n_linear <= 0 or int(n_linear) != n_linear:
+			raise ValueError(
+				f"Invalid resolution (nx={nx}, ny={ny}) for deep_notched boundaries. "
+				"Require ny - (nx - 2) to be a positive even number."
+			)
+		n_linear = int(n_linear)
+
+		notch_radius = self.notch_diameter / 2
+		notch_center_left = (0.0, self.notch_height)
+		notch_center_right = (self.x_max, self.notch_height)
+
+		up = np.array([(x, self.y_max) for x in np.linspace(0.0, self.x_max, nx)])
+		low = np.array([(x, 0.0) for x in np.linspace(0.0, self.x_max, nx)])
+
+		left_1 = np.array([(0.0, y) for y in np.linspace(0.0, self.notch_height - notch_radius, n_linear)])
+		left_2 = np.array([(0.0, y) for y in np.linspace(self.notch_height + notch_radius, self.y_max, n_linear)])
+		left_circle = np.array([
+			(notch_center_left[0] + notch_radius * np.sin(t), notch_center_left[1] + notch_radius * np.cos(t))
+			for t in np.linspace(np.pi, 0.0, n_arc)
+		])[1:-1]
+		left = np.concatenate([left_1, left_circle, left_2])
+
+		right_1 = np.array([(self.x_max, y) for y in np.linspace(0.0, self.notch_height - notch_radius, n_linear)])
+		right_2 = np.array([(self.x_max, y) for y in np.linspace(self.notch_height + notch_radius, self.y_max, n_linear)])
+		right_circle = np.array([
+			(notch_center_right[0] + notch_radius * np.sin(t), notch_center_right[1] + notch_radius * np.cos(t))
+			for t in np.linspace(np.pi, 2 * np.pi, n_arc)
+		])[1:-1]
+		right = np.concatenate([right_1, right_circle, right_2])
+
+		return {
+			"upX": up[:, 0],
+			"upY": up[:, 1],
+			"lowX": low[:, 0],
+			"lowY": low[:, 1],
+			"leftX": left[:, 0],
+			"leftY": left[:, 1],
+			"rightX": right[:, 0],
+			"rightY": right[:, 1],
+		}
 			
