@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import matplotlib.colors as mcolors
 from matplotlib.patches import Rectangle
+from scipy.interpolate import RegularGridInterpolator
 from phd.plot.config import get_current_config, KUL_CYCLE
 
 # Re-export general plotting functions for convenient import
@@ -90,12 +91,28 @@ def _infer_variable_meta(config, n_vars):
     return legacy[:n_vars]
 
 
-def _infer_domain_length(config, default=1.0):
-    """Infer square domain length from explicit config value only."""
+def _infer_domain_bounds(config, default=1.0):
+    """Infer rectangular domain bounds from config.
+
+    Priority:
+    1) problem.geometry.length -> square [0, L]x[0, L]
+    2) problem.geometry.x_max / y_max with optional x_min / y_min
+    3) fallback square [0, default]x[0, default]
+    """
     geom_len = _cfg_get(config, "problem.geometry.length", None)
     if geom_len is not None:
-        return float(geom_len)
-    return float(default)
+        L = float(geom_len)
+        return 0.0, L, 0.0, L
+
+    x_max = _cfg_get(config, "problem.geometry.x_max", None)
+    y_max = _cfg_get(config, "problem.geometry.y_max", None)
+    if x_max is not None and y_max is not None:
+        x_min = float(_cfg_get(config, "problem.geometry.x_min", 0.0))
+        y_min = float(_cfg_get(config, "problem.geometry.y_min", 0.0))
+        return x_min, float(x_max), y_min, float(y_max)
+
+    L = float(default)
+    return 0.0, L, 0.0, L
 
 
 def plot_DIC_region(
@@ -252,7 +269,60 @@ def compute_metrics_from_history(losshistory, config):
     return metrics
 
 
-def process_results(results, exact_solution_fn, plot_fields=None):
+def _extract_variable_array_history(results):
+    """Extract variable-array callback history as dict of arrays.
+
+    Returns:
+        (steps, data_dict) where data_dict maps variable name -> np.ndarray of shape
+        (n_snapshots, n_values). Returns (None, {}) when unavailable.
+    """
+    var_arr_cb = results.get("callbacks", {}).get("variable_array")
+    if not var_arr_cb or not getattr(var_arr_cb, "history", None):
+        return None, {}
+
+    history = var_arr_cb.history
+    steps = np.array([h[0] for h in history])
+    first = history[0][1]
+    data = {name: np.array([np.asarray(h[1][name]).reshape(-1) for h in history]) for name in first.keys()}
+    return steps, data
+
+
+def _interpolate_weight_history_to_grid(weight_hist, x_eval, y_eval, x_min, x_max, y_min, y_max):
+    """Interpolate flattened weight history to a target evaluation grid."""
+    if weight_hist is None or len(weight_hist) == 0:
+        return None
+
+    n_vals = int(weight_hist.shape[1])
+    n_side = int(np.sqrt(n_vals))
+    if n_side * n_side != n_vals:
+        return None
+
+    src_x = np.linspace(float(x_min), float(x_max), n_side)
+    src_y = np.linspace(float(y_min), float(y_max), n_side)
+    eval_points = np.stack((x_eval.ravel(), y_eval.ravel()), axis=1)
+
+    out = []
+    for snap in weight_hist:
+        interp = RegularGridInterpolator(
+            (src_x, src_y),
+            snap.reshape(n_side, n_side),
+            method="linear",
+            bounds_error=False,
+            fill_value=np.nan,
+        )
+        out.append(interp(eval_points).reshape(x_eval.shape))
+    return np.asarray(out)
+
+
+def _weight_frame_index(current_step, weight_steps):
+    """Map plotting step to nearest available weight snapshot index."""
+    if weight_steps is None or len(weight_steps) == 0:
+        return None
+    idx = int(np.searchsorted(weight_steps, current_step, side="right") - 1)
+    return max(0, min(idx, len(weight_steps) - 1))
+
+
+def process_results(results, exact_solution_fn, plot_fields=None, mesh_transform=None):
     """
     Process results dictionary and return data needed for plotting.
     
@@ -317,12 +387,26 @@ def process_results(results, exact_solution_fn, plot_fields=None):
                 "value_fmt": value_fmt,
             }
 
-    # Prepare mesh grid
+    # Prepare evaluation grid (computational centers) and plotting mesh
     ngrid = int(np.sqrt(fields_dict[next(iter(fields_dict))].shape[1])) if fields_dict else 100
-    domain_len = _infer_domain_length(config, default=1.0)
-    x_lin = np.linspace(0, float(domain_len), ngrid)
-    y_lin = np.linspace(0, float(domain_len), ngrid)
-    Xmesh, Ymesh = np.meshgrid(x_lin, y_lin, indexing="ij")
+    x_min, x_max, y_min, y_max = _infer_domain_bounds(config, default=1.0)
+
+    x_edge = np.linspace(x_min, x_max, ngrid + 1)
+    y_edge = np.linspace(y_min, y_max, ngrid + 1)
+    Xedge, Yedge = np.meshgrid(x_edge, y_edge, indexing="ij")
+    x_eval = 0.5 * (x_edge[:-1] + x_edge[1:])
+    y_eval = 0.5 * (y_edge[:-1] + y_edge[1:])
+    Xeval, Yeval = np.meshgrid(x_eval, y_eval, indexing="ij")
+
+    if mesh_transform is not None:
+        edge_points = np.stack((Xedge.ravel(), Yedge.ravel()), axis=1)
+        mapped_edges = np.asarray(mesh_transform(edge_points))
+        if mapped_edges.ndim != 2 or mapped_edges.shape[1] != 2:
+            raise ValueError("mesh_transform must return array of shape (N, 2).")
+        Xmesh = mapped_edges[:, 0].reshape(Xedge.shape)
+        Ymesh = mapped_edges[:, 1].reshape(Yedge.shape)
+    else:
+        Xmesh, Ymesh = Xedge, Yedge
 
     # Field names and exact solution
     all_field_names = ["Ux", "Uy", "Sxx", "Syy", "Sxy", "Exx", "Eyy", "Exy"]
@@ -333,7 +417,7 @@ def process_results(results, exact_solution_fn, plot_fields=None):
     mu = _cfg_get(config, "problem.material.mu", _cfg_get(config, "mu", 0.5))
     Q = _cfg_get(config, "problem.material.Q", _cfg_get(config, "Q", 4.0))
     net_type = _cfg_get(config, "model.net_type", _cfg_get(config, "net_type", "SPINN"))
-    X_input = [x_lin.reshape(-1, 1), y_lin.reshape(-1, 1)] if net_type == "SPINN" else np.stack((Xmesh.ravel(), Ymesh.ravel()), axis=1)
+    X_input = [x_eval.reshape(-1, 1), y_eval.reshape(-1, 1)] if net_type == "SPINN" else np.stack((Xeval.ravel(), Yeval.ravel()), axis=1)
     exact_vals = np.asarray(exact_solution_fn(X_input, lmbd, mu, Q, net_type))
     if exact_vals.ndim == 1:
         exact_vals = exact_vals[:, np.newaxis]
@@ -363,7 +447,7 @@ def process_results(results, exact_solution_fn, plot_fields=None):
             for name in field_names if name in fields_dict
         }
         
-    return steps, metrics, vars_history, fields_init, get_snapshot, (Xmesh, Ymesh), config, fields_dict
+    return steps, metrics, vars_history, fields_init, get_snapshot, (Xmesh, Ymesh), (Xeval, Yeval), config, fields_dict
 
 
 def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opts):
@@ -393,12 +477,15 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
         fig: matplotlib figure
         artists: dict containing all updatable artists and data for animation
     """
-    o = {"fields": None, "show_metrics": True, "show_residual": True, "dpi": 100, 
+    o = {"fields": None, "show_metrics": True, "show_residual": True, "dpi": 100,
          "metrics": ["L2 Error"], "step_type": "iteration", "time_unit": "min",
-         "show_iter": False, "plot_contours": False, **opts}
+         "show_iter": False, "plot_contours": False, "side_panel": "variables", **opts}
     
-    steps, metrics, vars_history, fields_init, get_snapshot_fn, (mx, my), config, fields_dict = process_results(
-        results, exact_solution_fn, plot_fields=o["fields"]
+    steps, metrics, vars_history, fields_init, get_snapshot_fn, (mx, my), (xe, ye), config, fields_dict = process_results(
+        results,
+        exact_solution_fn,
+        plot_fields=o["fields"],
+        mesh_transform=o.get("mesh_transform", None),
     )
     
     # Convert steps to time if requested
@@ -437,6 +524,7 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
     artists = {
         "steps": steps,
         "meshes": (mx, my),
+        "eval_meshes": (xe, ye),
         "ax": ax,
         "step_type": step_type,
         "time_unit": time_unit,
@@ -448,31 +536,68 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
     }
     
     # --- Column 0: Variables & Metrics (if enabled) ---
-    run_artists = {"var_artists": {}, "metrics_artists": {}, "field_artists": []}
+    run_artists = {"var_artists": {}, "metrics_artists": {}, "weight_artists": {}, "field_artists": []}
     
     if o["show_metrics"]:
-        has_variables = False
-        var_colors = [mcolors.to_hex(KUL_CYCLE[1]), mcolors.to_hex(KUL_CYCLE[2])]
-        var_items = list(vars_history.items())[:2]
-        for row in range(2):
-            ax_var = ax[row, 0]
-            ax_var.set_box_aspect(1)  # Square aspect ratio
-            if row >= len(var_items):
-                ax_var.set_visible(False)
-            else:
-                has_variables = True
-                var_name, var_data = var_items[row]
-                s = var_data.get("steps", steps)
-                v = var_data.get("values", np.zeros_like(steps))
-                lbl = var_data.get("label", var_name)
-                true_val = var_data.get("true_val", None)
-                value_fmt = var_data.get("value_fmt", ".3f")
-                clr = var_colors[row % len(var_colors)]
-                art = init_parameter_evolution(ax_var, s, v, true_val=true_val, label=lbl, color=clr,
-                                               show_xlabel=False, step_type=step_type, time_unit=time_unit,
-                                               value_fmt=value_fmt)
-                run_artists["var_artists"][var_name] = art
-                update_parameter_evolution(current_step, art)
+        has_top_panel = False
+        side_panel = str(o.get("side_panel", "variables")).lower()
+        if side_panel not in {"variables", "weights"}:
+            raise ValueError("side_panel must be one of {'variables', 'weights'}.")
+
+        if side_panel == "weights":
+            weight_steps, weight_hist = _extract_variable_array_history(results)
+            x_min_w, x_max_w = float(np.nanmin(xe)), float(np.nanmax(xe))
+            y_min_w, y_max_w = float(np.nanmin(ye)), float(np.nanmax(ye))
+            pde_grid_hist = _interpolate_weight_history_to_grid(
+                weight_hist.get("pde_weights"), xe, ye, x_min_w, x_max_w, y_min_w, y_max_w
+            ) if weight_hist else None
+            mat_grid_hist = _interpolate_weight_history_to_grid(
+                weight_hist.get("mat_weights"), xe, ye, x_min_w, x_max_w, y_min_w, y_max_w
+            ) if weight_hist else None
+
+            weight_items = [
+                ("pde_weights", pde_grid_hist, r"$\lambda_{PDE}$"),
+                ("mat_weights", mat_grid_hist, r"$\lambda_{Mat}$"),
+            ]
+            w_idx = _weight_frame_index(current_step, weight_steps)
+            for row, (name, grid_hist, title_txt) in enumerate(weight_items[:2]):
+                ax_w = ax[row, 0]
+                ax_w.set_box_aspect(1)
+                if grid_hist is None or w_idx is None:
+                    ax_w.set_visible(False)
+                    continue
+
+                has_top_panel = True
+                current_grid = grid_hist[w_idx]
+                art = plot_field(ax_w, mx, my, current_grid, title=title_txt, cmap="Blues", plot_contours=False)
+                add_colorbar(fig, ax_w, art["im"], location="left", shift=0.01)
+                run_artists["weight_artists"][name] = {
+                    "im": art["im"],
+                    "history": grid_hist,
+                    "steps": weight_steps,
+                }
+        else:
+            var_colors = [mcolors.to_hex(KUL_CYCLE[1]), mcolors.to_hex(KUL_CYCLE[2])]
+            var_items = list(vars_history.items())[:2]
+            for row in range(2):
+                ax_var = ax[row, 0]
+                ax_var.set_box_aspect(1)  # Square aspect ratio
+                if row >= len(var_items):
+                    ax_var.set_visible(False)
+                else:
+                    has_top_panel = True
+                    var_name, var_data = var_items[row]
+                    s = var_data.get("steps", steps)
+                    v = var_data.get("values", np.zeros_like(steps))
+                    lbl = var_data.get("label", var_name)
+                    true_val = var_data.get("true_val", None)
+                    value_fmt = var_data.get("value_fmt", ".3f")
+                    clr = var_colors[row % len(var_colors)]
+                    art = init_parameter_evolution(ax_var, s, v, true_val=true_val, label=lbl, color=clr,
+                                                   show_xlabel=False, step_type=step_type, time_unit=time_unit,
+                                                   value_fmt=value_fmt)
+                    run_artists["var_artists"][var_name] = art
+                    update_parameter_evolution(current_step, art)
 
         # Metrics in last row of column 0
         ax_loss = ax[n_rows - 1, 0]
@@ -480,7 +605,7 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
         # Use label instead of title if there are variables being plotted
         # Use metrics["steps"] which matches the metrics arrays length
         run_artists["metrics_artists"] = init_metrics(ax_loss, metrics["steps"], metrics, 
-                                                   selected_metrics=o["metrics"], use_title=not has_variables,
+                                                   selected_metrics=o["metrics"], use_title=not has_top_panel,
                                                    step_type=step_type, time_unit=time_unit,
                                                    show_iter=o["show_iter"], current_step=current_step)
         update_metrics(current_step, run_artists["metrics_artists"])
@@ -563,6 +688,18 @@ def update_frame(frame_idx, fig, artists):
         # Update variable evolution plots
         for var_name, art in run_artists.get("var_artists", {}).items():
             update_parameter_evolution(current_step, art)
+
+        # Update weight maps
+        for _, w_art in run_artists.get("weight_artists", {}).items():
+            w_idx = _weight_frame_index(current_step, w_art.get("steps"))
+            if w_idx is None:
+                continue
+            w_grid = w_art["history"][w_idx]
+            w_art["im"].set_array(w_grid.ravel())
+            w_min = float(np.nanmin(w_grid))
+            w_max = float(np.nanmax(w_grid))
+            if np.isfinite(w_min) and np.isfinite(w_max) and w_max > w_min:
+                w_art["im"].set_clim(w_min, w_max)
         
         # Update metrics
         metrics_artists = run_artists.get("metrics_artists", {})
@@ -652,15 +789,21 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
     """
     from pathlib import Path
     
-    o = {"dpi": 100, "metrics": ["L2 Error"], "step_type": "iteration", 
+    o = {"dpi": 100, "metrics": ["L2 Error"], "step_type": "iteration",
          "time_unit": "min", "show_iter": False, "plot_contours": True, **opts}
     
     # Process both results
-    steps1, metrics1, _, fields_init1, get_snapshot_fn1, (mx, my), config1, _ = process_results(
-        results1, exact_solution_fn, plot_fields=[field]
+    steps1, metrics1, _, fields_init1, get_snapshot_fn1, (mx, my), _, config1, _ = process_results(
+        results1,
+        exact_solution_fn,
+        plot_fields=[field],
+        mesh_transform=o.get("mesh_transform", None),
     )
-    steps2, metrics2, _, fields_init2, get_snapshot_fn2, _, config2, _ = process_results(
-        results2, exact_solution_fn, plot_fields=[field]
+    steps2, metrics2, _, fields_init2, get_snapshot_fn2, _, _, config2, _ = process_results(
+        results2,
+        exact_solution_fn,
+        plot_fields=[field],
+        mesh_transform=o.get("mesh_transform", None),
     )
     
     # Handle time synchronization between runs

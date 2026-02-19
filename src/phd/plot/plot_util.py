@@ -229,7 +229,17 @@ def plot_field(ax, X, Y, data, title=None, cmap='viridis', plot_contours=False, 
     ax.set_yticks([])
     if title: ax.set_title(title)
     if plot_contours:
-        cs = ax.contour(X, Y, data, colors='k', alpha=0.15, levels=10)
+        # If X,Y are edge grids (n+1,n+1) and data is cell-centered (n,n),
+        # build center grids for contouring.
+        if (
+            X.shape[0] == data.shape[0] + 1 and X.shape[1] == data.shape[1] + 1
+            and Y.shape[0] == data.shape[0] + 1 and Y.shape[1] == data.shape[1] + 1
+        ):
+            Xc = 0.25 * (X[:-1, :-1] + X[1:, :-1] + X[:-1, 1:] + X[1:, 1:])
+            Yc = 0.25 * (Y[:-1, :-1] + Y[1:, :-1] + Y[:-1, 1:] + Y[1:, 1:])
+            cs = ax.contour(Xc, Yc, data, colors='k', alpha=0.15, levels=10)
+        else:
+            cs = ax.contour(X, Y, data, colors='k', alpha=0.15, levels=10)
     else:
         cs = None
     return {"im": im, "contours": cs}
@@ -257,6 +267,10 @@ def add_colorbar(fig, ax, im, location="right", format=None, shift=0.01, size=0.
     if location == "right":
         cax = fig.add_axes([pos.x1 + shift, pos.y0, size, pos.height])
         cb = fig.colorbar(im, cax=cax, format=format)
+    elif location == "left":
+        cax = fig.add_axes([pos.x0 - shift - size, pos.y0, size, pos.height])
+        cb = fig.colorbar(im, cax=cax, format=format)
+        cb.ax.yaxis.set_ticks_position('left')
     elif location == "top":
         cax_pos = mtransforms.Bbox.from_bounds(pos.x0, pos.y1 + shift, pos.width, size)
         cax = fig.add_axes(cax_pos)
