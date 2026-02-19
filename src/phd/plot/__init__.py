@@ -27,6 +27,9 @@ from .plot_util import (
     subsample_frames,
 )
 
+# CM-specific helpers
+from .plot_cm import plot_DIC_region
+
 __all__ = [
     # Config
     "PlottingConfig",
@@ -49,4 +52,5 @@ __all__ = [
     "add_colorbar",
     "init_figure",
     "subsample_frames",
+    "plot_DIC_region",
 ]

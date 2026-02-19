@@ -9,6 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import matplotlib.colors as mcolors
+from matplotlib.patches import Rectangle
 from phd.plot.config import get_current_config, KUL_CYCLE
 
 # Re-export general plotting functions for convenient import
@@ -95,6 +96,118 @@ def _infer_domain_length(config, default=1.0):
     if geom_len is not None:
         return float(geom_len)
     return float(default)
+
+
+def plot_DIC_region(
+    artists,
+    config,
+    *,
+    fields=("Ux", "Uy"),
+    linewidth=1,
+    edgecolor="red",
+    facecolor="none",
+    zorder=10,
+    label="DIC region",
+    add_points=False,
+    point_kwargs=None,
+):
+    """Overlay DIC measurement region on predicted field axes.
+
+    Args:
+        artists: artists dict returned by plot_results()/init_plot().
+        config: run config (DictConfig or dict).
+        fields: field names whose prediction panels receive the patch.
+        linewidth, edgecolor, facecolor, zorder, label: Rectangle style args.
+        add_points: whether to overlay DIC sample points.
+        point_kwargs: optional kwargs for scatter when add_points=True.
+
+    Returns:
+        List of matplotlib Rectangle patches added.
+    """
+    dic_region = _cfg_get(config, "task.inverse.measurements.dic.region", None)
+    if dic_region is None:
+        return []
+
+    x_min, x_max, y_min, y_max = [float(v) for v in dic_region]
+
+    # Auto-map normalized [0, 1] DIC region to physical mesh extents when needed.
+    meshes = artists.get("meshes", None)
+    if meshes is not None and len(meshes) == 2 and meshes[0] is not None and meshes[1] is not None:
+        mx, my = meshes
+        mesh_x_min = float(np.nanmin(mx))
+        mesh_x_max = float(np.nanmax(mx))
+        mesh_y_min = float(np.nanmin(my))
+        mesh_y_max = float(np.nanmax(my))
+
+        dic_is_normalized = (
+            0.0 <= x_min <= 1.0 and 0.0 <= x_max <= 1.0 and
+            0.0 <= y_min <= 1.0 and 0.0 <= y_max <= 1.0
+        )
+        mesh_not_normalized = (
+            abs(mesh_x_max - mesh_x_min) > 2.0 or abs(mesh_y_max - mesh_y_min) > 2.0
+        )
+
+        if dic_is_normalized and mesh_not_normalized:
+            x_min = mesh_x_min + x_min * (mesh_x_max - mesh_x_min)
+            x_max = mesh_x_min + x_max * (mesh_x_max - mesh_x_min)
+            y_min = mesh_y_min + y_min * (mesh_y_max - mesh_y_min)
+            y_max = mesh_y_min + y_max * (mesh_y_max - mesh_y_min)
+
+    n_obs_x = int(_cfg_get(config, "task.inverse.measurements.n_observations.x", 0) or 0)
+    n_obs_y = int(_cfg_get(config, "task.inverse.measurements.n_observations.y", 0) or 0)
+    dic_points = None
+    if add_points and n_obs_x > 0 and n_obs_y > 0:
+        x_dic = np.linspace(x_min, x_max, n_obs_x)
+        y_dic = np.linspace(y_min, y_max, n_obs_y)
+        dic_points = np.array(np.meshgrid(x_dic, y_dic)).T.reshape(-1, 2)
+
+    scatter_opts = {"color": "white", "s": 1, "zorder": max(zorder - 1, 1)}
+    if point_kwargs:
+        scatter_opts.update(point_kwargs)
+
+    field_set = set(fields)
+    added_patches = []
+
+    # For plot_results(), prediction row is row=1 and field columns are offset by metrics column.
+    ax_grid = artists.get("ax", None)
+    if ax_grid is not None:
+        ax_grid = np.atleast_2d(ax_grid)
+    field_names = list(artists.get("field_names", []))
+    n_field_cols = len(field_names)
+    col_offset = 0
+    if ax_grid is not None and n_field_cols > 0 and n_field_cols <= ax_grid.shape[1]:
+        col_offset = ax_grid.shape[1] - n_field_cols
+
+    for run_artists in artists.get("runs_artists", []):
+        for idx, field_art in enumerate(run_artists.get("field_artists", [])):
+            if field_art.get("name") not in field_set:
+                continue
+
+            ax_pred = field_art.get("art_pred", {}).get("ax", None)
+            if ax_pred is None and ax_grid is not None and ax_grid.shape[0] > 1:
+                col = col_offset + idx
+                if 0 <= col < ax_grid.shape[1]:
+                    ax_pred = ax_grid[1, col]
+            if ax_pred is None:
+                continue
+
+            rect = Rectangle(
+                (x_min, y_min),
+                x_max - x_min,
+                y_max - y_min,
+                linewidth=linewidth,
+                edgecolor=edgecolor,
+                facecolor=facecolor,
+                zorder=zorder,
+                label=label,
+            )
+            ax_pred.add_patch(rect)
+            added_patches.append(rect)
+
+            if dic_points is not None:
+                ax_pred.scatter(dic_points[:, 0], dic_points[:, 1], **scatter_opts)
+
+    return added_patches
 
 
 def compute_metrics_from_history(losshistory, config):
