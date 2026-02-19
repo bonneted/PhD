@@ -1,0 +1,136 @@
+# Deep-notched plate problem - mapped computational domain configuration
+
+problem:
+  name: deep_notched
+
+  geometry:
+    x_max: 100.0
+    y_max: 100.0
+    notch_diameter: 50.0
+    notch_height: 50.0
+
+  mapping:
+    nx: 60
+    ny: 88
+    force_recompute: false
+
+  loading:
+    pstress: 50.0
+
+  reference:
+    # Relative paths are resolved from src/phd/io/dataset
+    dataset_by_material:
+      isotropic: side_loaded_plate/100x100mm.dat
+      orthotropic: side_loaded_plate/100x100mm_ortho.dat
+
+  material:
+    law: isotropic  # isotropic or orthotropic
+
+    isotropic:
+      E: 52000.0
+      nu: 0.3
+
+    orthotropic:
+      Q11: 41000.0
+      Q22: 10300.0
+      Q12: 3100.0
+      Q66: 4000.0
+      theta_deg: 45.0
+
+  bc:
+    corner_eps: 0.0
+    displacement_bc: false
+    n_integral: 100
+    n_free: 400
+
+  log_fields:
+    - Ux
+    - Uy
+    - Exx
+    - Eyy
+    - Exy
+    - Sxx
+    - Syy
+    - Sxy
+
+  # <= 0 uses automatic scaling from reference interpolation
+  displacement_scale:
+    - 0.0
+    - 0.0
+
+model:
+  net_type: SPINN  # SPINN or PINN
+  formulation: mixed
+
+  architecture:
+    n_hidden: 3
+    width: 32
+    rank: 50
+    activations: tanh
+    initialization: "Glorot uniform"
+    mlp_type: mlp
+
+training:
+  n_iter: 60000
+  lr: 1.0e-3
+  num_domain: 10000
+  num_test: 10000
+  coord_normalization: true
+  loss_weights: none
+
+  lr_decay: null
+
+  self_attention:
+    enabled: false
+    init: constant
+    update_factor: -1.0
+    share_weights: true
+
+  log_every: 250
+  generate_video: false
+
+task:
+  type: forward  # forward or inverse
+
+  inverse:
+    normalize_parameters: true
+
+    measurements:
+      enabled: true
+      source: fem  # fem or dic
+      type: strain  # displacement or strain
+      n_observations:
+        x: 100
+        y: 100
+      dic:
+        region: [0.0, 1.0, 0.0, 1.0]
+        path: side_loaded_plate/dic/0.4MP/0noise
+        sample_id: 0
+      noise_ratio: 0.0
+
+    init_guess:
+      isotropic:
+        E: 100000.0
+        nu: 0.2
+      orthotropic:
+        Q11: 25650.0
+        Q22: 25650.0
+        Q12: 7695.0
+        Q66: 19884.0
+
+    training_factors:
+      isotropic:
+        E: 1.0
+        nu: 1.0
+      orthotropic:
+        Q11: 1.0
+        Q22: 1.0
+        Q12: 1.0
+        Q66: 1.0
+
+results:
+  base_dir: results
+  experiment_name: null
+  save_on_disk: false
+
+seed: 0
