@@ -714,6 +714,7 @@ def load_run(run_name, problem, base_dir=None, restore_model=False, train_fn=Non
     config, run_metrics = _load_run_metadata(run_dir, rm)
     losshistory = _load_loss_history(rm)
     variable_value_callback = _load_variable_history(run_dir)
+    variable_array_callback = _load_variable_arrays(run_dir)
     model_params, external_vars = _load_model_params(run_dir)
     field_saver = _load_field_snapshots(run_dir, rm)
     
@@ -730,7 +731,7 @@ def load_run(run_name, problem, base_dir=None, restore_model=False, train_fn=Non
         "callbacks": {
             "field_saver": field_saver,
             "variable_value": variable_value_callback,
-            "variable_array": None,
+            "variable_array": variable_array_callback,
         },
         "model_params": model_params,
         "external_vars": external_vars,
@@ -793,6 +794,44 @@ def _load_variable_history(run_dir):
     """Load trainable variable history."""
     var_file = run_dir / "variables.dat"
     if not var_file.exists():
+        return None
+
+
+def _load_variable_arrays(run_dir):
+    """Load SA/array-valued variable history from variable_arrays.npz."""
+    arrays_file = run_dir / "variable_arrays.npz"
+    if not arrays_file.exists():
+        return None
+
+    try:
+        with np.load(arrays_file, allow_pickle=True) as f:
+            if "steps" not in f:
+                return None
+
+            steps = np.asarray(f["steps"]).astype(int).reshape(-1)
+            var_names = [k for k in f.files if k != "steps"]
+            if not var_names:
+                return None
+
+            arrays_by_name = {name: np.asarray(f[name]) for name in var_names}
+
+        history = []
+        for i, step in enumerate(steps):
+            snapshot = {name: arrays_by_name[name][i] for name in var_names}
+            history.append((int(step), snapshot))
+
+        class MockVariableArrayCallback(dde.callbacks.Callback):
+            """Mock callback for loaded array-variable history (read-only)."""
+
+            def __init__(self, history, steps, var_names):
+                super().__init__()
+                self.history = history
+                self.steps = [int(s) for s in steps]
+                self.var_dict = {name: None for name in var_names}
+
+        return MockVariableArrayCallback(history, steps, var_names)
+    except Exception as e:
+        print(f"Warning: Could not load variable arrays: {e}")
         return None
     
     try:
