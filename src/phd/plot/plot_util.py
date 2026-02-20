@@ -204,7 +204,31 @@ def update_parameter_evolution(current_step, artist):
     ax.legend(handlelength=0.5).get_frame().set_linewidth(0.5)
 
 
-def plot_field(ax, X, Y, data, title=None, cmap='viridis', plot_contours=False, vmin=None, vmax=None):
+def _is_rectilinear_mesh(X, Y, atol=1e-8, rtol=1e-6):
+    """Return True when mesh behaves like axis-aligned tensor grid."""
+    x_arr = np.asarray(X)
+    y_arr = np.asarray(Y)
+    if x_arr.ndim != 2 or y_arr.ndim != 2:
+        return False
+    if x_arr.shape != y_arr.shape:
+        return False
+    x_rect = np.allclose(x_arr, x_arr[:, :1], atol=atol, rtol=rtol)
+    y_rect = np.allclose(y_arr, y_arr[:1, :], atol=atol, rtol=rtol)
+    return bool(x_rect and y_rect)
+
+
+def plot_field(
+    ax,
+    X,
+    Y,
+    data,
+    title=None,
+    cmap='viridis',
+    plot_contours=False,
+    vmin=None,
+    vmax=None,
+    hide_frame='auto',
+):
     """
     Generic pcolor plot for a 2D field.
     
@@ -216,6 +240,8 @@ def plot_field(ax, X, Y, data, title=None, cmap='viridis', plot_contours=False, 
         cmap: colormap name
         plot_contours: whether to overlay contour lines
         vmin, vmax: color limits
+        hide_frame: whether to hide axis borders/spines. Use "auto" to hide
+            only for non-rectilinear meshes.
     
     Returns:
         dict with "im" (pcolor artist) and "contours" (contour artist or None)
@@ -227,6 +253,15 @@ def plot_field(ax, X, Y, data, title=None, cmap='viridis', plot_contours=False, 
     ax.set_aspect('equal')
     ax.set_xticks([])
     ax.set_yticks([])
+
+    if hide_frame == 'auto':
+        hide_frame = not _is_rectilinear_mesh(X, Y)
+    if hide_frame:
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.set_frame_on(False)
+        ax.patch.set_alpha(0)
+
     if title: ax.set_title(title)
     if plot_contours:
         # If X,Y are edge grids (n+1,n+1) and data is cell-centered (n,n),
@@ -242,7 +277,7 @@ def plot_field(ax, X, Y, data, title=None, cmap='viridis', plot_contours=False, 
             cs = ax.contour(X, Y, data, colors='k', alpha=0.15, levels=10)
     else:
         cs = None
-    return {"im": im, "contours": cs}
+    return {"im": im, "contours": cs, "ax": ax}
 
 
 def add_colorbar(fig, ax, im, location="right", format=None, shift=0.01, size=0.01):

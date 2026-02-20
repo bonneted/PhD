@@ -9,7 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import matplotlib.colors as mcolors
-from matplotlib.patches import Rectangle
+from matplotlib.patches import Polygon, Rectangle
 from scipy.interpolate import RegularGridInterpolator
 from phd.plot.config import get_current_config, KUL_CYCLE
 
@@ -113,6 +113,78 @@ def _infer_domain_bounds(config, default=1.0):
 
     L = float(default)
     return 0.0, L, 0.0, L
+
+
+def _is_curvilinear_mesh(X, Y, atol=1e-8, rtol=1e-6):
+    x_arr = np.asarray(X)
+    y_arr = np.asarray(Y)
+    if x_arr.ndim != 2 or y_arr.ndim != 2 or x_arr.shape != y_arr.shape:
+        return False
+    x_rect = np.allclose(x_arr, x_arr[:, :1], atol=atol, rtol=rtol)
+    y_rect = np.allclose(y_arr, y_arr[:1, :], atol=atol, rtol=rtol)
+    return not (x_rect and y_rect)
+
+
+def _hide_axis_border(ax):
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.set_frame_on(False)
+    ax.patch.set_alpha(0)
+
+
+def plot_curvilinear_region(
+    ax,
+    region,
+    mesh_transform=None,
+    n_edge=80,
+    edgecolor="w",
+    facecolor=None,
+    alpha=0.1,
+    linewidth=0.8,
+    label=None,
+    zorder=10,
+):
+    """Plot a rectangular region, optionally mapped to a curvilinear mesh."""
+    x_min, x_max, y_min, y_max = [float(v) for v in region]
+
+    if facecolor is None:
+        facecolor = mcolors.to_rgba(edgecolor, alpha=alpha)
+
+    if mesh_transform is None:
+        patch = Rectangle(
+            (x_min, y_min),
+            x_max - x_min,
+            y_max - y_min,
+            edgecolor=edgecolor,
+            facecolor=facecolor,
+            linewidth=linewidth,
+            label=label,
+            zorder=zorder,
+        )
+        ax.add_patch(patch)
+        return patch
+
+    top_edge = np.column_stack([np.linspace(x_min, x_max, n_edge), np.full(n_edge, y_max)])
+    right_edge = np.column_stack([np.full(n_edge, x_max), np.linspace(y_max, y_min, n_edge)])
+    bottom_edge = np.column_stack([np.linspace(x_max, x_min, n_edge), np.full(n_edge, y_min)])
+    left_edge = np.column_stack([np.full(n_edge, x_min), np.linspace(y_min, y_max, n_edge)])
+    boundary = np.vstack([top_edge, right_edge, bottom_edge, left_edge])
+
+    mapped = np.asarray(mesh_transform(boundary))
+    if mapped.ndim != 2 or mapped.shape[1] != 2:
+        raise ValueError("mesh_transform must return array with shape (N, 2).")
+
+    patch = Polygon(
+        mapped,
+        closed=True,
+        edgecolor=edgecolor,
+        facecolor=facecolor,
+        linewidth=linewidth,
+        label=label,
+        zorder=zorder,
+    )
+    ax.add_patch(patch)
+    return patch
 
 
 def plot_DIC_region(
@@ -387,16 +459,63 @@ def process_results(results, exact_solution_fn, plot_fields=None, mesh_transform
                 "value_fmt": value_fmt,
             }
 
-    # Prepare evaluation grid (computational centers) and plotting mesh
+    # Prepare evaluation grid and plotting mesh
     ngrid = int(np.sqrt(fields_dict[next(iter(fields_dict))].shape[1])) if fields_dict else 100
     x_min, x_max, y_min, y_max = _infer_domain_bounds(config, default=1.0)
+    net_type = _cfg_get(config, "model.net_type", _cfg_get(config, "net_type", "SPINN"))
 
-    x_edge = np.linspace(x_min, x_max, ngrid + 1)
-    y_edge = np.linspace(y_min, y_max, ngrid + 1)
-    Xedge, Yedge = np.meshgrid(x_edge, y_edge, indexing="ij")
-    x_eval = 0.5 * (x_edge[:-1] + x_edge[1:])
-    y_eval = 0.5 * (y_edge[:-1] + y_edge[1:])
+    x_eval = np.linspace(x_min, x_max, ngrid)
+    y_eval = np.linspace(y_min, y_max, ngrid)
     Xeval, Yeval = np.meshgrid(x_eval, y_eval, indexing="ij")
+
+    def _edges_from_nodes(nodes, lower, upper):
+        vals = np.asarray(nodes, dtype=float).reshape(-1)
+        if vals.size < 2:
+            return np.array([lower, upper], dtype=float)
+        mids = 0.5 * (vals[:-1] + vals[1:])
+        edges = np.empty(vals.size + 1, dtype=float)
+        edges[1:-1] = mids
+        edges[0] = vals[0] - 0.5 * (vals[1] - vals[0])
+        edges[-1] = vals[-1] + 0.5 * (vals[-1] - vals[-2])
+        edges[0] = max(edges[0], float(lower))
+        edges[-1] = min(edges[-1], float(upper))
+        return edges
+
+    x_input_exact = [x_eval.reshape(-1, 1), y_eval.reshape(-1, 1)] if net_type == "SPINN" else np.stack(
+        (Xeval.ravel(), Yeval.ravel()), axis=1
+    )
+
+    # Prefer FieldSaver evaluation grid to avoid node-vs-center mismatch in exact-vs-pred plots.
+    if field_saver is not None and getattr(field_saver, "x_eval", None) is not None:
+        x_eval_saved = field_saver.x_eval
+
+        if isinstance(x_eval_saved, (list, tuple)) and len(x_eval_saved) == 2:
+            x_vals = np.asarray(x_eval_saved[0]).reshape(-1)
+            y_vals = np.asarray(x_eval_saved[1]).reshape(-1)
+            if x_vals.size * y_vals.size == ngrid * ngrid:
+                x_eval = x_vals
+                y_eval = y_vals
+                Xeval, Yeval = np.meshgrid(x_eval, y_eval, indexing="ij")
+                x_edge = _edges_from_nodes(x_eval, x_min, x_max)
+                y_edge = _edges_from_nodes(y_eval, y_min, y_max)
+                x_input_exact = [x_eval.reshape(-1, 1), y_eval.reshape(-1, 1)]
+
+        elif isinstance(x_eval_saved, np.ndarray) and x_eval_saved.ndim == 2 and x_eval_saved.shape[1] == 2:
+            x_flat = x_eval_saved[:, 0]
+            y_flat = x_eval_saved[:, 1]
+            x_unique = np.unique(x_flat)
+            y_unique = np.unique(y_flat)
+            if x_unique.size * y_unique.size == x_eval_saved.shape[0] and x_eval_saved.shape[0] == ngrid * ngrid:
+                x_eval = x_unique
+                y_eval = y_unique
+                Xeval, Yeval = np.meshgrid(x_eval, y_eval, indexing="ij")
+                x_edge = _edges_from_nodes(x_eval, x_min, x_max)
+                y_edge = _edges_from_nodes(y_eval, y_min, y_max)
+                x_input_exact = x_eval_saved
+
+    x_edge = _edges_from_nodes(x_eval, x_min, x_max)
+    y_edge = _edges_from_nodes(y_eval, y_min, y_max)
+    Xedge, Yedge = np.meshgrid(x_edge, y_edge, indexing="ij")
 
     if mesh_transform is not None:
         edge_points = np.stack((Xedge.ravel(), Yedge.ravel()), axis=1)
@@ -416,9 +535,7 @@ def process_results(results, exact_solution_fn, plot_fields=None, mesh_transform
     lmbd = _cfg_get(config, "problem.material.lmbd", _cfg_get(config, "lmbd", 1.0))
     mu = _cfg_get(config, "problem.material.mu", _cfg_get(config, "mu", 0.5))
     Q = _cfg_get(config, "problem.material.Q", _cfg_get(config, "Q", 4.0))
-    net_type = _cfg_get(config, "model.net_type", _cfg_get(config, "net_type", "SPINN"))
-    X_input = [x_eval.reshape(-1, 1), y_eval.reshape(-1, 1)] if net_type == "SPINN" else np.stack((Xeval.ravel(), Yeval.ravel()), axis=1)
-    exact_vals = np.asarray(exact_solution_fn(X_input, lmbd, mu, Q, net_type))
+    exact_vals = np.asarray(exact_solution_fn(x_input_exact, lmbd, mu, Q, net_type))
     if exact_vals.ndim == 1:
         exact_vals = exact_vals[:, np.newaxis]
 
@@ -450,6 +567,194 @@ def process_results(results, exact_solution_fn, plot_fields=None, mesh_transform
     return steps, metrics, vars_history, fields_init, get_snapshot, (Xmesh, Ymesh), (Xeval, Yeval), config, fields_dict
 
 
+def _extract_slice_data(Xmesh, Ymesh, Xgrid, Ygrid, pred_grid, exact_grid, *, direction, value, s_min, s_max):
+    """Extract physical-coordinate slice and field values for profile plotting."""
+    x_mesh = np.asarray(Xmesh)
+    y_mesh = np.asarray(Ymesh)
+    x_grid = np.asarray(Xgrid)
+    y_grid = np.asarray(Ygrid)
+
+    # plot_field uses edge meshes for pcolor; profile data lives on cell centers.
+    if x_mesh.shape[0] == x_grid.shape[0] + 1 and x_mesh.shape[1] == x_grid.shape[1] + 1:
+        x_mesh = 0.25 * (x_mesh[:-1, :-1] + x_mesh[1:, :-1] + x_mesh[:-1, 1:] + x_mesh[1:, 1:])
+        y_mesh = 0.25 * (y_mesh[:-1, :-1] + y_mesh[1:, :-1] + y_mesh[:-1, 1:] + y_mesh[1:, 1:])
+
+    if x_mesh.shape != x_grid.shape or y_mesh.shape != y_grid.shape:
+        raise ValueError("Slice extraction requires mesh and grid arrays with matching center-grid shapes.")
+
+    if direction == "vertical":
+        idx = int(np.argmin(np.abs(np.nanmean(x_mesh, axis=1) - value)))
+        x_phys = x_mesh[idx, :]
+        y_phys = y_mesh[idx, :]
+        x_comp = x_grid[idx, :]
+        y_comp = y_grid[idx, :]
+        s_phys = y_phys
+        mask = (s_phys >= s_min) & (s_phys <= s_max)
+        s_label = "Y"
+    elif direction == "horizontal":
+        idx = int(np.argmin(np.abs(np.nanmean(y_mesh, axis=0) - value)))
+        x_phys = x_mesh[:, idx]
+        y_phys = y_mesh[:, idx]
+        x_comp = x_grid[:, idx]
+        y_comp = y_grid[:, idx]
+        s_phys = x_phys
+        mask = (s_phys >= s_min) & (s_phys <= s_max)
+        s_label = "X"
+    else:
+        raise ValueError("direction must be either 'vertical' or 'horizontal'.")
+
+    points_comp = np.column_stack((x_comp[mask], y_comp[mask]))
+    points_phys = np.column_stack((x_phys[mask], y_phys[mask]))
+    s_phys = s_phys[mask]
+
+    interp_pred = RegularGridInterpolator((Xgrid[:, 0], Ygrid[0, :]), pred_grid, bounds_error=False, fill_value=np.nan)
+    interp_exact = RegularGridInterpolator((Xgrid[:, 0], Ygrid[0, :]), exact_grid, bounds_error=False, fill_value=np.nan)
+
+    pred_vals = interp_pred(points_comp)
+    exact_vals = interp_exact(points_comp)
+
+    order = np.argsort(s_phys)
+    return {
+        "line_xy": points_phys[order],
+        "s_phys": s_phys[order],
+        "pred_vals": pred_vals[order],
+        "exact_vals": exact_vals[order],
+        "s_label": s_label,
+    }
+
+
+def plot_slice_comparison(
+    results,
+    exact_solution_fn,
+    *,
+    fields=("Sxx", "Syy", "Sxy"),
+    slice_specs=None,
+    iteration=-1,
+    mesh_transform=None,
+    dic_region=None,
+    dic_region_label="DIC region",
+    dpi=150,
+    fig=None,
+    ax=None,
+):
+    """Plot 2D field maps + 1D slice profiles in a legacy-compatible, square-grid layout."""
+    fields = list(fields)
+    if not fields:
+        raise ValueError("fields must contain at least one field name.")
+
+    steps, _, _, fields_init, get_snapshot_fn, (mx, my), (xe, ye), config, _ = process_results(
+        results,
+        exact_solution_fn,
+        plot_fields=fields,
+        mesh_transform=mesh_transform,
+    )
+
+    if iteration == -1:
+        iteration = len(steps) - 1
+    snapshot = get_snapshot_fn(iteration)
+
+    x_min, x_max, y_min, y_max = _infer_domain_bounds(config, default=1.0)
+    if slice_specs is None:
+        slice_specs = [
+            {
+                "direction": "horizontal",
+                "value": 0.5 * (y_min + y_max),
+                "min": x_min,
+                "max": x_max,
+                "title": "Horizontal Slice",
+            },
+            {
+                "direction": "vertical",
+                "value": x_max,
+                "min": y_min + 0.2 * (y_max - y_min),
+                "max": y_min + 0.8 * (y_max - y_min),
+                "title": "Vertical Slice",
+            },
+        ]
+
+    n_rows = len(fields)
+    n_cols = 2 * len(slice_specs)
+
+    if fig is None or ax is None:
+        figwidth = get_current_config().page_width * (n_cols / 4)
+        figsize = (figwidth, figwidth * n_rows / max(n_cols, 1) + 0.05 * get_current_config().page_width)
+        fig, ax = init_figure(n_rows, n_cols, dpi=dpi, figsize=figsize)
+    else:
+        ax = np.atleast_2d(ax)
+
+    curvilinear = _is_curvilinear_mesh(mx, my)
+
+    for row, fname in enumerate(fields):
+        exact_grid = fields_init[fname]["data"][0]
+        pred_grid = snapshot[fname][1]
+        title = fields_init[fname].get("title", fname)
+
+        for j, spec in enumerate(slice_specs):
+            direction = str(spec.get("direction", "vertical")).lower()
+            value = float(spec.get("value", 0.0))
+            s_min = float(spec.get("min", y_min if direction == "vertical" else x_min))
+            s_max = float(spec.get("max", y_max if direction == "vertical" else x_max))
+            block_title = str(spec.get("title", direction.title()))
+
+            map_ax = ax[row, 2 * j]
+            prof_ax = ax[row, 2 * j + 1]
+
+            art_map = plot_field(
+                map_ax,
+                mx,
+                my,
+                exact_grid,
+                title=title,
+                cmap="viridis",
+                hide_frame="auto",
+            )
+            # add_colorbar(fig, map_ax, art_map["im"], location="left", size=0.005, shift=0.01)
+
+            if dic_region is not None:
+                plot_curvilinear_region(
+                    map_ax,
+                    dic_region,
+                    mesh_transform=mesh_transform,
+                    edgecolor="w",
+                    facecolor=mcolors.to_rgba("w", alpha=0.10),
+                    linewidth=get_current_config().scale,
+                    label=dic_region_label,
+                )
+
+            slice_data = _extract_slice_data(
+                mx,
+                my,
+                xe,
+                ye,
+                pred_grid,
+                exact_grid,
+                direction=direction,
+                value=value,
+                s_min=s_min,
+                s_max=s_max,
+            )
+
+            line_xy = slice_data["line_xy"]
+            map_ax.plot(line_xy[:, 0], line_xy[:, 1], "r-", linewidth=get_current_config().scale*2)
+            map_ax.set_box_aspect(1)
+
+            prof_ax.plot(slice_data["s_phys"], slice_data["pred_vals"], "b-", label="PINN")
+            prof_ax.plot(slice_data["s_phys"], slice_data["exact_vals"], "r--", label="FEM")
+            # prof_ax.set_xlabel(f"{slice_data['s_label']} (mm)")
+            # prof_ax.set_ylabel(title)
+            # prof_ax.set_title(block_title)
+            if j == 0 and row == 0:
+                prof_ax.legend(handlelength=1.0, fontsize=get_current_config().min_font_size).get_frame().set_linewidth(get_current_config().scale)
+            prof_ax.set_box_aspect(1)
+
+            if curvilinear:
+                _hide_axis_border(map_ax)
+                # _hide_axis_border(prof_ax)
+
+    # fig.tight_layout(pad=0.5, w_pad=0.5, h_pad=0.5)
+    return fig, ax
+
+
 def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opts):
     """
     Initialize plot and return figure, axes, and artists for animation.
@@ -479,7 +784,8 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
     """
     o = {"fields": None, "show_metrics": True, "show_residual": True, "dpi": 100,
          "metrics": ["L2 Error"], "step_type": "iteration", "time_unit": "min",
-         "show_iter": False, "plot_contours": False, "side_panel": "variables", **opts}
+            "show_iter": False, "plot_contours": False, "side_panel": "variables",
+            "hide_frame_on_curvilinear": True, **opts}
     
     steps, metrics, vars_history, fields_init, get_snapshot_fn, (mx, my), (xe, ye), config, fields_dict = process_results(
         results,
@@ -653,6 +959,12 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
             "art_err": art_err,
             "name": fname
         })
+
+    if o.get("hide_frame_on_curvilinear", True) and _is_curvilinear_mesh(mx, my):
+        # Keep metrics panel frame visible; hide only field panels.
+        field_axes = [ax[0, 0], ax[0, 1], ax[0, 2], ax[1, 1], ax[1, 2]]
+        for ax_i in field_axes:
+            _hide_axis_border(ax_i)
     
     artists["runs_artists"].append(run_artists)
     return fig, artists
@@ -792,9 +1104,10 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
         artists: dict of artists for animation (use with animate())
     """
     from pathlib import Path
-    
+
     o = {"dpi": 100, "metrics": ["L2 Error"], "step_type": "iteration",
-         "time_unit": "min", "show_iter": False, "plot_contours": True, **opts}
+         "time_unit": "min", "show_iter": False, "plot_contours": True,
+         "hide_frame_on_curvilinear": True, **opts}
     
     # Process both results
     steps1, metrics1, _, fields_init1, get_snapshot_fn1, (mx, my), _, config1, _ = process_results(
@@ -983,6 +1296,10 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
         "time_ratios": time_ratios,  # For mapping base frame_idx to each run's frame_idx
         "ax": ax,
     }
+
+    if o.get("hide_frame_on_curvilinear", True) and _is_curvilinear_mesh(mx, my):
+        for ax_i in np.asarray(ax).ravel():
+            _hide_axis_border(ax_i)
     
     return fig, artists
 

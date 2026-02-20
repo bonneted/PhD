@@ -30,6 +30,7 @@ from phd.plot.plot_cm import (
     plot_field_evolution,
     plot_metrics_comparison,
     plot_results as _plot_results,
+    plot_slice_comparison as _plot_slice_comparison,
 )
 
 
@@ -396,7 +397,7 @@ def _load_measurements(cfg: DictConfig, ref: dict, net_type: str):
     source = str(OmegaConf.select(meas_cfg, "source", default="fem")).lower()
     n_obs_x = int(meas_cfg.n_observations.x)
     n_obs_y = int(meas_cfg.n_observations.y)
-    noise_ratio = float(meas_cfg.noise_ratio)
+    noise_std = float(meas_cfg.noise_std)
 
     x_max = float(cfg.problem.geometry.x_max)
     y_max = float(cfg.problem.geometry.y_max)
@@ -426,8 +427,8 @@ def _load_measurements(cfg: DictConfig, ref: dict, net_type: str):
         x_obs_input = _reference_inputs(net_type, x_obs, y_obs)
         obs = ref["solution_interp"](x_obs_input)[:, :2] if meas_type == "displacement" else ref["strain_interp"](x_obs_input)
 
-    if noise_ratio > 0:
-        obs = obs + np.random.normal(0.0, noise_ratio * np.std(obs), size=obs.shape)
+    if noise_std > 0:
+        obs = obs + np.random.normal(0.0, noise_std, size=obs.shape)
 
     return {
         "type": meas_type,
@@ -687,8 +688,8 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
                 + uy_top * (x_in[:, 1] / y_max)
             )
         else:
-            ux = f[:, 0] * u0[0]
-            uy = f[:, 1] * u0[1]
+            ux = f[:, 0] * x_in[:, 1] / y_max * u0[0]
+            uy = f[:, 1] * x_in[:, 1] / y_max * u0[1]
 
         sxx = f[:, 2] * _bc_factor(x_mapped[:, 0], x_mapped[:, 1], segs_sxx, "C0+")
         syy = f[:, 3]
@@ -880,7 +881,7 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
         all_anchors = bcs_anchors + [pde_anchor]
 
         n_warmup = cfg.training.loss_normalization.n_warmup
-        model.train(iterations=100, callbacks=[])
+        model.train(iterations=n_warmup, callbacks=[])
         weight_type = "grad" if loss_norm_scheme == "grad_norm" else "ntk"
         factors, stats = compute_loss_weight_factors(
             model=model,
@@ -1002,6 +1003,20 @@ def plot_results(results, iteration=-1, fig=None, ax=None, **opts):
     return _plot_results(results, exact_fn, iteration=iteration, fig=fig, ax=ax, mesh_transform=mesh_transform, **opts)
 
 
+def plot_slice_results(results, iteration=-1, fig=None, ax=None, **opts):
+    exact_fn = _plot_exact_solution_from_cfg(results["config"])
+    mesh_transform = _plot_mesh_transform_from_cfg(results["config"])
+    return _plot_slice_comparison(
+        results,
+        exact_fn,
+        iteration=iteration,
+        fig=fig,
+        ax=ax,
+        mesh_transform=mesh_transform,
+        **opts,
+    )
+
+
 __all__ = [
     "train",
     "exact_solution",
@@ -1009,6 +1024,7 @@ __all__ = [
     "load_run",
     "init_plot",
     "plot_results",
+    "plot_slice_results",
     "animate",
     "plot_compare",
     "plot_metrics_comparison",

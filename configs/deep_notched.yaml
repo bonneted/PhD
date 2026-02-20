@@ -45,7 +45,7 @@ problem:
     corner_eps: 0.0
     displacement_bc: false
     n_integral: 100
-    n_free: 200
+    n_free: 400
 
   log_fields:
     - Ux
@@ -115,7 +115,7 @@ task:
       region: [0.05, 0.95, 0.20, 0.80]
       path: side_loaded_plate/dic/0.4MP/0noise
       sample_id: 0
-    noise_ratio: 0.0
+    noise_std: 0.0
 
   inverse:
     normalize_parameters: true

@@ -676,6 +676,23 @@ def _save_field_snapshots(results, rm):
     # Save steps index
     steps = [h[0] for h in saver.history]
     np.savetxt(fields_dir / "steps.txt", np.array(steps, dtype=int), fmt="%d")
+
+    # Save evaluation coordinates when available (for exact-vs-pred plotting alignment)
+    x_eval = getattr(saver, "x_eval", None)
+    if x_eval is not None:
+        if isinstance(x_eval, (list, tuple)) and len(x_eval) == 2:
+            np.savez_compressed(
+                fields_dir / "x_eval.npz",
+                kind="list",
+                x0=np.asarray(x_eval[0]),
+                x1=np.asarray(x_eval[1]),
+            )
+        else:
+            np.savez_compressed(
+                fields_dir / "x_eval.npz",
+                kind="array",
+                x=np.asarray(x_eval),
+            )
     
     # Save each snapshot
     for step, fields in saver.history:
@@ -909,6 +926,19 @@ def _load_field_snapshots(run_dir, rm):
             with np.load(file_path) as f:
                 fields = {k: f[k] for k in f.keys()}
                 field_saver.history.append((int(step), fields))
+
+    # Restore evaluation coordinates if available
+    x_eval_file = fields_dir / "x_eval.npz"
+    if x_eval_file.exists():
+        try:
+            with np.load(x_eval_file, allow_pickle=True) as f:
+                kind = str(f.get("kind", "array"))
+                if kind == "list" and "x0" in f and "x1" in f:
+                    field_saver.x_eval = [np.asarray(f["x0"]), np.asarray(f["x1"])]
+                elif "x" in f:
+                    field_saver.x_eval = np.asarray(f["x"])
+        except Exception as e:
+            print(f"Warning: Could not load field evaluation coordinates: {e}")
     
     return field_saver
 

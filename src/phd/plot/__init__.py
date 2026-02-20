@@ -28,7 +28,7 @@ from .plot_util import (
 )
 
 # CM-specific helpers
-from .plot_cm import plot_DIC_region
+from .plot_cm import plot_DIC_region, plot_curvilinear_region, plot_slice_comparison
 
 __all__ = [
     # Config
@@ -53,4 +53,6 @@ __all__ = [
     "init_figure",
     "subsample_frames",
     "plot_DIC_region",
+    "plot_curvilinear_region",
+    "plot_slice_comparison",
 ]
