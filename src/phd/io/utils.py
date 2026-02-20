@@ -796,6 +796,40 @@ def _load_variable_history(run_dir):
     if not var_file.exists():
         return None
 
+    try:
+        var_data = np.loadtxt(var_file)
+        if var_data.ndim == 1:
+            var_data = var_data.reshape(1, -1)
+
+        # Load metadata if available
+        meta_file = run_dir / "variables_meta.json"
+        scale_factors = None
+        period = 1
+        if meta_file.exists():
+            with open(meta_file, "r") as f:
+                meta = json.load(f)
+                scale_factors = meta.get("scale_factors")
+                period = meta.get("period", 1)
+
+        class MockVariableCallback(dde.callbacks.Callback):
+            """Mock callback for loaded variable history (read-only)."""
+
+            def __init__(self, history, scale_factors=None, period=1):
+                super().__init__()
+                self.history = history
+                self.scale_factors = scale_factors
+                self.period = period
+
+            def get_value(self):
+                if not self.history:
+                    return None
+                return self.history[-1][1:]
+
+        return MockVariableCallback(var_data.tolist(), scale_factors, period)
+    except Exception as e:
+        print(f"Warning: Could not load variables: {e}")
+        return None
+
 
 def _load_variable_arrays(run_dir):
     """Load SA/array-valued variable history from variable_arrays.npz."""
@@ -832,35 +866,6 @@ def _load_variable_arrays(run_dir):
         return MockVariableArrayCallback(history, steps, var_names)
     except Exception as e:
         print(f"Warning: Could not load variable arrays: {e}")
-        return None
-    
-    try:
-        var_data = np.loadtxt(var_file)
-        if var_data.ndim == 1:
-            var_data = var_data.reshape(1, -1)
-        
-        # Load metadata if available
-        meta_file = run_dir / "variables_meta.json"
-        scale_factors = None
-        period = 1
-        if meta_file.exists():
-            with open(meta_file, "r") as f:
-                meta = json.load(f)
-                scale_factors = meta.get("scale_factors")
-                period = meta.get("period", 1)
-        
-        # Create a mock callback that inherits from dde.callbacks.Callback
-        class MockVariableCallback(dde.callbacks.Callback):
-            """Mock callback for loaded variable history (read-only)."""
-            def __init__(self, history, scale_factors=None, period=1):
-                super().__init__()
-                self.history = history
-                self.scale_factors = scale_factors
-                self.period = period
-        
-        return MockVariableCallback(var_data.tolist(), scale_factors, period)
-    except Exception as e:
-        print(f"Warning: Could not load variables: {e}")
         return None
 
 
