@@ -204,6 +204,90 @@ def update_parameter_evolution(current_step, artist):
     ax.legend(handlelength=0.5).get_frame().set_linewidth(0.5)
 
 
+def init_multi_parameter_evolution(ax, steps, histories, true_vals=None, labels=None,
+                                   colors=None, xlabel=None, show_xlabel=True,
+                                   step_type="iteration", time_unit="s",
+                                   value_fmts=None):
+    """
+    Initialize multi-parameter evolution plot with multiple lines on the same axis.
+    
+    Args:
+        ax: matplotlib axis
+        steps: array of step values (iterations or time values)
+        histories: list of arrays of parameter values
+        true_vals: list of true/target values to show as horizontal lines
+        labels: list of parameter labels
+        colors: list of line colors (optional, defaults to tab10 colormap)
+        xlabel: x-axis label (None = auto based on step_type)
+        show_xlabel: If True, show x-axis label
+        step_type: "iteration" or "time" - controls default xlabel
+        time_unit: "s" or "min" - unit for time display
+        value_fmts: list of format strings for each parameter (default ".3f")
+    
+    Returns:
+        dict with "params" list containing artists for each parameter
+    """
+    n_params = len(histories)
+    if labels is None:
+        labels = [f"Param {i}" for i in range(n_params)]
+    if true_vals is None:
+        true_vals = [None] * n_params
+    if value_fmts is None:
+        value_fmts = [".3f"] * n_params
+    if colors is None:
+        cmap = KUL_CYCLE
+        colors = [cmap(i % 10) for i in range(n_params)]
+    
+    params_artists = []
+    for i, (hist, true_val, label, color, fmt) in enumerate(zip(histories, true_vals, labels, colors, value_fmts)):
+        if true_val is not None:
+            ax.axhline(y=true_val, linestyle='--', color=color, alpha=0.7)
+        ax.plot(steps, hist, alpha=0.2, color=color)
+        line, = ax.plot([], [], color=color, zorder=3)
+        scatter = ax.scatter([], [], c=color, zorder=4, 
+                             label=f"{label} = {hist[0]:{fmt}}")
+        params_artists.append({
+            "line": line, 
+            "scatter": scatter, 
+            "data": hist, 
+            "steps": steps, 
+            "label": label, 
+            "value_fmt": fmt,
+            "color": color,
+        })
+    
+    if show_xlabel:
+        if xlabel is None:
+            xlabel = "Time (min)" if step_type == "time" and time_unit == "min" else \
+                     "Time (s)" if step_type == "time" else "Iterations"
+        ax.set_xlabel(xlabel)
+    ax.legend(handlelength=0.5, loc='upper right', bbox_to_anchor=(0.98, 0.9)).get_frame().set_linewidth(0.1)
+    
+    return {"params": params_artists, "ax": ax}
+
+
+def update_multi_parameter_evolution(current_step, artist):
+    """
+    Update multi-parameter evolution plot.
+    
+    Args:
+        current_step: current iteration/step value
+        artist: dict returned by init_multi_parameter_evolution
+    """
+    ax = artist["ax"]
+    for param_art in artist["params"]:
+        steps, data = param_art["steps"], param_art["data"]
+        idx = np.searchsorted(steps, current_step)
+        if idx >= len(steps): idx = len(steps) - 1
+        
+        param_art["line"].set_data(steps[:idx+1], data[:idx+1])
+        param_art["scatter"].set_offsets([[steps[idx], data[idx]]])
+        value_fmt = param_art.get("value_fmt", ".3f")
+        param_art["scatter"].set_label(f"{param_art['label']} = {data[idx]:{value_fmt}}")
+    
+    ax.legend(handlelength=0.5, loc='upper right', bbox_to_anchor=(0.98, 0.9)).get_frame().set_linewidth(0.5)
+
+
 def _is_rectilinear_mesh(X, Y, atol=1e-8, rtol=1e-6):
     """Return True when mesh behaves like axis-aligned tensor grid."""
     x_arr = np.asarray(X)

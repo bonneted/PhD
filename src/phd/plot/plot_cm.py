@@ -20,6 +20,8 @@ from phd.plot.plot_util import (
     update_metrics,
     init_parameter_evolution,
     update_parameter_evolution,
+    init_multi_parameter_evolution,
+    update_multi_parameter_evolution,
     plot_field,
     add_colorbar,
     init_figure,
@@ -33,6 +35,22 @@ LATEX_FIELD_NAMES = {
     "Ux": r"$u_x$", "Uy": r"$u_y$",
     "Sxx": r"$\sigma_{xx}$", "Syy": r"$\sigma_{yy}$", "Sxy": r"$\sigma_{xy}$",
     "Exx": r"$\varepsilon_{xx}$", "Eyy": r"$\varepsilon_{yy}$", "Exy": r"$\varepsilon_{xy}$",
+}
+
+DEFAULT_LATEX_NAMES = {
+    "L2 Error": r"$e_{L^2}^{rel}$",
+    "PDE Loss": r"$\mathcal{L}_{\text{PDE}}$",
+    "Material Loss": r"$\mathcal{L}_{\text{mat}}$",
+    "Total Loss": r"$\mathcal{L}_{\text{total}}$",
+    "lambda": r"$\lambda$",
+    "lmbd": r"$\lambda$",
+    "mu": r"$\mu$",
+    "E": r"$E$",
+    "nu": r"$\nu$",
+    "E1": r"$E_1$",
+    "E2": r"$E_2$",
+    "G12": r"$G_{12}$",
+    "nu12": r"$\nu_{12}$",
 }
 
 
@@ -444,11 +462,12 @@ def process_results(results, exact_solution_fn, plot_fields=None, mesh_transform
             label = meta["label"]
             value_fmt = ".3f"
 
-            if meta["key"] in {"E", "E1", "E2"}:
+            # Convert moduli (E, G) to GPa for display
+            if meta["key"] in {"E", "E1", "E2", "G12"}:
                 values = values / 1e3
                 if true_val is not None:
                     true_val = float(true_val) / 1e3
-                label = f"{label}"# [GPa]" --> too long for legend
+                label = f"{label}"  # [GPa] label omitted for compactness
                 value_fmt = ".1f"
 
             vars_history[meta["key"]] = {
@@ -892,27 +911,73 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
                     "steps": weight_steps,
                 }
         else:
-            var_colors = [mcolors.to_hex(KUL_CYCLE[1]), mcolors.to_hex(KUL_CYCLE[2])]
-            var_items = list(vars_history.items())[:2]
-            for row in range(2):
-                ax_var = ax[row, 0]
-                ax_var.set_box_aspect(1)  # Square aspect ratio
-                if row >= len(var_items):
-                    ax_var.set_visible(False)
-                else:
-                    has_top_panel = True
-                    var_name, var_data = var_items[row]
-                    s = var_data.get("steps", steps)
-                    v = var_data.get("values", np.zeros_like(steps))
-                    lbl = var_data.get("label", var_name)
-                    true_val = var_data.get("true_val", None)
-                    value_fmt = var_data.get("value_fmt", ".3f")
-                    clr = var_colors[row % len(var_colors)]
-                    art = init_parameter_evolution(ax_var, s, v, true_val=true_val, label=lbl, color=clr,
-                                                   show_xlabel=False, step_type=step_type, time_unit=time_unit,
-                                                   value_fmt=value_fmt)
-                    run_artists["var_artists"][var_name] = art
-                    update_parameter_evolution(current_step, art)
+            var_keys = list(vars_history.keys())
+            is_orthotropic = len(var_keys) == 4 and set(var_keys) == {"E1", "E2", "G12", "nu12"}
+            
+            if is_orthotropic:
+                # Orthotropic: E1, E2, G12 in first panel; nu12 in second panel
+                colors_list = KUL_CYCLE
+                
+                # Panel 0: E1, E2, G12 (multi-line)
+                ax_var0 = ax[0, 0]
+                ax_var0.set_box_aspect(1)
+                has_top_panel = True
+                
+                moduli_keys = ["E1", "E2", "G12"]
+                moduli_data = [vars_history[k] for k in moduli_keys]
+                histories = [d["values"] for d in moduli_data]
+                true_vals = [d.get("true_val") for d in moduli_data]
+                labels = [d.get("label", k) for k, d in zip(moduli_keys, moduli_data)]
+                value_fmts = [d.get("value_fmt", ".1f") for d in moduli_data]
+                moduli_steps = moduli_data[0].get("steps", steps)
+                colors = [colors_list[i % len(colors_list)] for i in range(len(moduli_keys))]
+                
+                art_multi = init_multi_parameter_evolution(
+                    ax_var0, moduli_steps, histories, true_vals=true_vals, labels=labels,
+                    colors=colors, show_xlabel=False, step_type=step_type, time_unit=time_unit,
+                    value_fmts=value_fmts
+                )
+                run_artists["var_artists"]["moduli_group"] = art_multi
+                update_multi_parameter_evolution(current_step, art_multi)
+                
+                # Panel 1: nu12 (single line)
+                ax_var1 = ax[1, 0]
+                ax_var1.set_box_aspect(1)
+                nu_data = vars_history["nu12"]
+                s = nu_data.get("steps", steps)
+                v = nu_data.get("values", np.zeros_like(steps))
+                lbl = nu_data.get("label", r"$\nu_{12}$")
+                true_val = nu_data.get("true_val", None)
+                value_fmt = nu_data.get("value_fmt", ".3f")
+                clr = mcolors.to_hex(KUL_CYCLE[2])
+                art = init_parameter_evolution(ax_var1, s, v, true_val=true_val, label=lbl, color=clr,
+                                               show_xlabel=False, step_type=step_type, time_unit=time_unit,
+                                               value_fmt=value_fmt)
+                run_artists["var_artists"]["nu12"] = art
+                update_parameter_evolution(current_step, art)
+            else:
+                # Isotropic/legacy: separate panels for each variable (up to 2)
+                var_colors = [mcolors.to_hex(KUL_CYCLE[1]), mcolors.to_hex(KUL_CYCLE[2])]
+                var_items = list(vars_history.items())[:2]
+                for row in range(2):
+                    ax_var = ax[row, 0]
+                    ax_var.set_box_aspect(1)  # Square aspect ratio
+                    if row >= len(var_items):
+                        ax_var.set_visible(False)
+                    else:
+                        has_top_panel = True
+                        var_name, var_data = var_items[row]
+                        s = var_data.get("steps", steps)
+                        v = var_data.get("values", np.zeros_like(steps))
+                        lbl = var_data.get("label", var_name)
+                        true_val = var_data.get("true_val", None)
+                        value_fmt = var_data.get("value_fmt", ".3f")
+                        clr = var_colors[row % len(var_colors)]
+                        art = init_parameter_evolution(ax_var, s, v, true_val=true_val, label=lbl, color=clr,
+                                                       show_xlabel=False, step_type=step_type, time_unit=time_unit,
+                                                       value_fmt=value_fmt)
+                        run_artists["var_artists"][var_name] = art
+                        update_parameter_evolution(current_step, art)
 
         # Metrics in last row of column 0
         ax_loss = ax[n_rows - 1, 0]
@@ -1017,7 +1082,11 @@ def update_frame(frame_idx, fig, artists):
         
         # Update variable evolution plots
         for var_name, art in run_artists.get("var_artists", {}).items():
-            update_parameter_evolution(current_step, art)
+            if var_name == "moduli_group":
+                # Multi-parameter plot (orthotropic E1, E2, G12)
+                update_multi_parameter_evolution(current_step, art)
+            else:
+                update_parameter_evolution(current_step, art)
 
         # Update weight maps
         for _, w_art in run_artists.get("weight_artists", {}).items():
@@ -1383,6 +1452,170 @@ def animate(fig, artists, output_file, fps=10, frame_indices=None, preview=False
     return anim
 
 
+def plot_variables_and_metric_simple(
+    results,
+    metric_name="L2 Error",
+    step_type="time",
+    time_unit="min",
+    fig=None,
+    ax=None,
+    dpi=200,
+):
+    """Plot 3 horizontal panels: metric first, then variables.
+
+    Panel layout:
+    - Orthotropic: [metric] | [E1,E2,G12] | [nu12]
+    - Isotropic/other: [metric] | [var1] | [var2]
+
+    This is a static helper with simple solid lines only (no scatter, no updates).
+    """
+    config = results["config"]
+    metrics = compute_metrics_from_history(results["losshistory"], config)
+
+    vars_history = {}
+    var_cb = results.get("callbacks", {}).get("variable_value")
+    if var_cb and getattr(var_cb, "history", None):
+        var_hist = np.array(var_cb.history)
+        if var_hist.ndim == 1:
+            var_hist = var_hist.reshape(1, -1)
+        n_vars = max(var_hist.shape[1] - 1, 0)
+        var_meta = _infer_variable_meta(config, n_vars)
+        for idx, meta in enumerate(var_meta, start=1):
+            if idx >= var_hist.shape[1]:
+                continue
+            values = np.asarray(var_hist[:, idx], dtype=float)
+            label = meta["label"]
+            true_val = meta.get("true_val", None)
+            if meta["key"] in {"E", "E1", "E2", "G12"}:
+                values = values / 1e3
+                if true_val is not None:
+                    true_val = float(true_val) / 1e3
+            vars_history[meta["key"]] = {
+                "steps": np.asarray(var_hist[:, 0], dtype=float),
+                "values": values,
+                "label": label,
+                "true_val": true_val,
+            }
+
+    if fig is None or ax is None:
+        figwidth = get_current_config().page_width
+        figheight = figwidth * 0.3
+        fig, ax = plt.subplots(1, 3, figsize=(figwidth, figheight), dpi=dpi)
+    else:
+        ax = np.asarray(ax).reshape(-1)
+
+    # Convert x-axis to time when requested
+    if step_type == "time":
+        elapsed = results.get("runtime_metrics", {}).get("elapsed_time", None)
+        if elapsed is not None and len(metrics["steps"]) > 0 and metrics["steps"][-1] > 0:
+            scale = elapsed / metrics["steps"][-1]
+            if time_unit == "min":
+                scale /= 60.0
+            metrics["steps"] = metrics["steps"] * scale
+            for item in vars_history.values():
+                item["steps"] = item["steps"] * scale
+
+    xlabel = "Iterations" if step_type == "iteration" else f"Time [{time_unit}]"
+    is_orthotropic = set(vars_history.keys()) == {"E1", "E2", "G12", "nu12"}
+
+    def _annotate_true_lines(axis, entries):
+        valid_entries = [e for e in entries if e.get("true_val") is not None and len(e.get("steps", [])) > 0]
+        if not valid_entries:
+            return
+
+        all_steps = np.concatenate([np.asarray(e["steps"], dtype=float) for e in valid_entries])
+        x_max = float(np.nanmax(all_steps))
+        if not np.isfinite(x_max):
+            return
+
+        current_xlim = axis.get_xlim()
+        x_left = float(current_xlim[0])
+        x_right = float(current_xlim[1])
+
+        x_range = x_max - x_left
+        if x_range <= 0:
+            x_range = 1.0
+        x_pad = 0.3 * x_range
+        x_text = x_max + 0.05 * x_range
+        axis.set_xlim(right=max(x_right, x_max + x_pad))
+        axis.margins(y=0.075)
+
+        for e in valid_entries:
+            axis.hlines(
+                float(e["true_val"]),
+                xmin=x_left,
+                xmax=x_max,
+                colors=e["color"],
+                linestyles="--",
+            )
+            axis.text(
+                x_text,
+                float(e["true_val"]),
+                e["label"],
+                color=e["color"],
+                va="center",
+                ha="left",
+                bbox={"facecolor": "white", "edgecolor": "none", "pad": 0.6},
+            )
+
+    ax[0].set_xlabel(xlabel)
+    ax[1].set_xlabel(xlabel)
+    ax[2].set_xlabel(xlabel)
+
+    metric_values = metrics.get(metric_name)
+    if metric_values is None:
+        raise KeyError(f"Metric '{metric_name}' not available. Found: {[k for k in metrics.keys() if k != 'steps']}")
+    ax[0].plot(metrics["steps"], metric_values, color=KUL_CYCLE[0], label=DEFAULT_LATEX_NAMES.get(metric_name, metric_name))
+    ax[0].set_yscale("log")
+    ax[0].legend(handlelength=0.8).get_frame().set_linewidth(get_current_config().scale)
+
+    if is_orthotropic:
+        moduli_entries = []
+        for i, key in enumerate(["E1", "E2", "G12"]):
+            item = vars_history[key]
+            color = KUL_CYCLE[i % len(KUL_CYCLE)]
+            ax[1].plot(item["steps"], item["values"], color=color)
+            moduli_entries.append({
+                "steps": item["steps"],
+                "true_val": item.get("true_val"),
+                "label": item["label"],
+                "color": color,
+            })
+        _annotate_true_lines(ax[1], moduli_entries)
+
+        nu_item = vars_history["nu12"]
+        ax[2].plot(nu_item["steps"], nu_item["values"], color=KUL_CYCLE[2])
+        _annotate_true_lines(
+            ax[2],
+            [{
+                "steps": nu_item["steps"],
+                "true_val": nu_item.get("true_val"),
+                "label": nu_item["label"],
+                "color": KUL_CYCLE[2],
+            }],
+        )
+    else:
+        var_items = list(vars_history.items())[:2]
+        for i in range(2):
+            if i < len(var_items):
+                _, item = var_items[i]
+                color = KUL_CYCLE[(i + 1) % len(KUL_CYCLE)]
+                ax[i + 1].plot(item["steps"], item["values"], color=color)
+                _annotate_true_lines(
+                    ax[i + 1],
+                    [{
+                        "steps": item["steps"],
+                        "true_val": item.get("true_val"),
+                        "label": item["label"],
+                        "color": color,
+                    }],
+                )
+            else:
+                ax[i + 1].set_visible(False)
+
+    return fig, ax
+
+
 def plot_metrics_comparison(results_dict, metric_name="L2 Error", run_names=None, 
                           step_type="iteration", time_unit="s", save_path=None,
                           fig=None, ax=None, yscale=None, ylabel=None):
@@ -1463,21 +1696,6 @@ def plot_metrics_comparison(results_dict, metric_name="L2 Error", run_names=None
     if step_type == "time":
         xlabel = f"Time [{time_unit}]"
         
-    DEFAULT_LATEX_NAMES = {
-        "L2 Error": r"$e_{L^2}^{rel}$",
-        "PDE Loss": r"$\mathcal{L}_{\text{PDE}}$",
-        "Material Loss": r"$\mathcal{L}_{\text{mat}}$",
-        "Total Loss": r"$\mathcal{L}_{\text{total}}$",
-        "lambda": r"$\lambda$",
-        "lmbd": r"$\lambda$",
-        "mu": r"$\mu$",
-        "E": r"$E$",
-        "nu": r"$\nu$",
-        "E1": r"$E_1$",
-        "E2": r"$E_2$",
-        "G12": r"$G_{12}$",
-        "nu12": r"$\nu_{12}$",
-    }
     if ylabel is None:
         ylabel = DEFAULT_LATEX_NAMES.get(metric_name, metric_name) 
     
