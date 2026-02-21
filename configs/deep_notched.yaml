@@ -35,10 +35,10 @@ problem:
       nu: 0.3
 
     orthotropic:
-      Q11: 41000.0
-      Q22: 10300.0
-      Q12: 3100.0
-      Q66: 4000.0
+      E1: 41000.0
+      E2: 10300.0
+      G12: 4000.0
+      nu12: 0.3
       theta_deg: 45.0
 
   bc:
@@ -125,20 +125,20 @@ task:
         E: 100000.0
         nu: 0.2
       orthotropic:
-        Q11: 25650.0
-        Q22: 25650.0
-        Q12: 7695.0
-        Q66: 19884.0
+        E1: 25650.0
+        E2: 25650.0
+        G12: 5000.0
+        nu12: 0.2
 
     training_factors:
       isotropic:
         E: 1.0
         nu: 1.0
       orthotropic:
-        Q11: 1.0
-        Q22: 1.0
-        Q12: 1.0
-        Q66: 1.0
+        E1: 1.0
+        E2: 1.0
+        G12: 1.0
+        nu12: 1.0
 
 results:
   base_dir: results

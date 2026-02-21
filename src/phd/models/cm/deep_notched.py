@@ -253,13 +253,13 @@ def _material_param_specs(cfg: DictConfig):
         names = ["E", "nu"]
     elif law == "orthotropic":
         true_values = {
-            "Q11": float(cfg.problem.material.orthotropic.Q11),
-            "Q22": float(cfg.problem.material.orthotropic.Q22),
-            "Q12": float(cfg.problem.material.orthotropic.Q12),
-            "Q66": float(cfg.problem.material.orthotropic.Q66),
+            "E1": float(cfg.problem.material.orthotropic.E1),
+            "E2": float(cfg.problem.material.orthotropic.E2),
+            "G12": float(cfg.problem.material.orthotropic.G12),
+            "nu12": float(cfg.problem.material.orthotropic.nu12),
             "theta_deg": float(OmegaConf.select(cfg, "problem.material.orthotropic.theta_deg", default=0.0)),
         }
-        names = ["Q11", "Q22", "Q12", "Q66"]
+        names = ["E1", "E2", "G12", "nu12"]
     else:
         raise ValueError(f"Unsupported material law: {law}")
     return law, names, true_values
@@ -278,10 +278,19 @@ def _make_constitutive_fn(material_law: str, params: dict):
 
         return constitutive_fn
 
-    q11 = params["Q11"]
-    q22 = params["Q22"]
-    q12 = params["Q12"]
-    q66 = params["Q66"]
+    # Orthotropic: convert engineering constants to reduced stiffnesses (Q matrix)
+    E1 = params["E1"]
+    E2 = params["E2"]
+    G12 = params["G12"]
+    nu12 = params["nu12"]
+    nu21 = nu12 * E2 / E1
+    delta = 1 - nu12 * nu21
+
+    q11 = E1 / delta
+    q22 = E2 / delta
+    q12 = nu12 * E2 / delta
+    q66 = G12
+
     theta = jnp.deg2rad(params.get("theta_deg", 0.0))
     c = jnp.cos(theta)
     s = jnp.sin(theta)
