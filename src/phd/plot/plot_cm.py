@@ -636,6 +636,8 @@ def plot_slice_comparison(
     dpi=150,
     fig=None,
     ax=None,
+    plot_contours=False,
+    color_percentile=None,
 ):
     """Plot 2D field maps + 1D slice profiles in a legacy-compatible, square-grid layout."""
     fields = list(fields)
@@ -707,6 +709,8 @@ def plot_slice_comparison(
                 title=title,
                 cmap="viridis",
                 hide_frame="auto",
+                plot_contours=plot_contours,
+                color_percentile=color_percentile,
             )
             # add_colorbar(fig, map_ax, art_map["im"], location="left", size=0.005, shift=0.01)
 
@@ -785,6 +789,7 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
     o = {"fields": None, "show_metrics": True, "show_residual": True, "dpi": 100,
          "metrics": ["L2 Error"], "step_type": "iteration", "time_unit": "min",
             "show_iter": False, "plot_contours": False, "side_panel": "variables",
+            "color_percentile": None,
             "hide_frame_on_curvilinear": True, **opts}
     
     steps, metrics, vars_history, fields_init, get_snapshot_fn, (mx, my), (xe, ye), config, fields_dict = process_results(
@@ -939,7 +944,16 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
             title_pred = title + "*"
     
         # Row 0: Reference
-        art_ref = plot_field(ax[0, col], mx, my, data_list[0], title=title, cmap="viridis", plot_contours=o["plot_contours"])
+        art_ref = plot_field(
+            ax[0, col],
+            mx,
+            my,
+            data_list[0],
+            title=title,
+            cmap="viridis",
+            plot_contours=o["plot_contours"],
+            color_percentile=o.get("color_percentile", None),
+        )
         add_colorbar(fig, ax[0, col], art_ref["im"], location="top", shift=0.05)
         
         # Row 1: Prediction
@@ -1107,6 +1121,7 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
 
     o = {"dpi": 100, "metrics": ["L2 Error"], "step_type": "iteration",
          "time_unit": "min", "show_iter": False, "plot_contours": True,
+            "color_percentile": None,
          "hide_frame_on_curvilinear": True, **opts}
     
     # Process both results
@@ -1200,7 +1215,16 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
     
     # --- Column 0: Exact field (top) and Metrics (bottom) ---
     # Top: Exact solution
-    art_exact = plot_field(ax[0, 0], mx, my, exact_data, title=field_title, cmap="viridis", plot_contours=o["plot_contours"])
+    art_exact = plot_field(
+        ax[0, 0],
+        mx,
+        my,
+        exact_data,
+        title=field_title,
+        cmap="viridis",
+        plot_contours=o["plot_contours"],
+        color_percentile=o.get("color_percentile", None),
+    )
     
     # Bottom: Metrics comparison (both runs overlaid)
     ax_metrics = ax[1, 0]

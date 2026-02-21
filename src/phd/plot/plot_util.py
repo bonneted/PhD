@@ -227,6 +227,7 @@ def plot_field(
     plot_contours=False,
     vmin=None,
     vmax=None,
+    color_percentile=None,
     hide_frame='auto',
 ):
     """
@@ -240,16 +241,55 @@ def plot_field(
         cmap: colormap name
         plot_contours: whether to overlay contour lines
         vmin, vmax: color limits
+        color_percentile: optional percentile clipping for color limits.
+            - scalar in (0, 1]: e.g. 0.99 => [1%, 99%]
+            - scalar in (1, 100]: e.g. 99 => [1%, 99%]
+            - tuple/list (low, high): explicit percentiles in [0, 100]
+            Applied only when vmin and/or vmax are not provided.
         hide_frame: whether to hide axis borders/spines. Use "auto" to hide
             only for non-rectilinear meshes.
     
     Returns:
         dict with "im" (pcolor artist) and "contours" (contour artist or None)
     """
-    if vmin is None: vmin = np.nanmin(data)
-    if vmax is None: vmax = np.nanmax(data)
+    data_arr = np.asarray(data)
+
+    def _percentile_limits(arr, percentile):
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return None, None
+
+        if np.isscalar(percentile):
+            p = float(np.asarray(percentile).reshape(()))
+            if p <= 1.0:
+                p = p * 100.0
+            p = min(max(p, 0.0), 100.0)
+            low_p, high_p = 100.0 - p, p
+        else:
+            if len(percentile) != 2:
+                raise ValueError("color_percentile sequence must have 2 values: (low, high).")
+            low_p = float(percentile[0])
+            high_p = float(percentile[1])
+
+        low = float(np.nanpercentile(finite, low_p))
+        high = float(np.nanpercentile(finite, high_p))
+        if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+            return float(np.nanmin(finite)), float(np.nanmax(finite))
+        return low, high
+
+    if (vmin is None or vmax is None) and color_percentile is not None:
+        pmin, pmax = _percentile_limits(data_arr, color_percentile)
+        if vmin is None:
+            vmin = pmin
+        if vmax is None:
+            vmax = pmax
+
+    if vmin is None:
+        vmin = np.nanmin(data_arr)
+    if vmax is None:
+        vmax = np.nanmax(data_arr)
     
-    im = ax.pcolor(X, Y, data, cmap=cmap, shading='auto', vmin=vmin, vmax=vmax)
+    im = ax.pcolor(X, Y, data_arr, cmap=cmap, shading='auto', vmin=vmin, vmax=vmax)
     ax.set_aspect('equal')
     ax.set_xticks([])
     ax.set_yticks([])
