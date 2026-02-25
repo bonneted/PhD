@@ -493,7 +493,8 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
     notch_diameter = float(cfg.problem.geometry.notch_diameter)
     notch_dist = (y_max - notch_diameter) / 2
     contact_eps = float(cfg.problem.bc.corner_eps) * x_max
-    displacement_bc = bool(cfg.problem.bc.displacement_bc)
+    displacement_bc_top = bool(cfg.problem.bc.displacement_bc_top)
+    displacement_bc_bottom = bool(cfg.problem.bc.displacement_bc_bottom)
 
     mapper, coord_map, coord_map_batch, calc_normal = _build_mapping(cfg)
     ref = _make_reference_interpolator(cfg, coord_map_batch)
@@ -690,15 +691,15 @@ def train(cfg: Optional[DictConfig] = None, overrides: Optional[list] = None):
         x_in = transform_coords(x)
         x_mapped = coord_map_batch(x_in)
 
-        if displacement_bc:
-            ux = f[:, 0] * x_in[:, 1] / y_max * (y_max - x_in[:, 1]) / y_max * u0[0]
-            uy = (
-                f[:, 1] * x_in[:, 1] / y_max * (y_max - x_in[:, 1]) / y_max * u0[1]
-                + uy_top * (x_in[:, 1] / y_max)
-            )
-        else:
-            ux = f[:, 0] * x_in[:, 1] / y_max * u0[0]
-            uy = f[:, 1] * x_in[:, 1] / y_max * u0[1]
+        y_ratio = x_in[:, 1] / y_max
+        top_factor = (1.0 - y_ratio) if displacement_bc_top else jnp.ones_like(y_ratio)
+        bottom_factor = y_ratio if displacement_bc_bottom else jnp.ones_like(y_ratio)
+        displacement_factor = top_factor * bottom_factor
+
+        ux = f[:, 0] * displacement_factor * u0[0]
+        uy = f[:, 1] * displacement_factor * u0[1]
+        if displacement_bc_top:
+            uy = uy + uy_top * y_ratio
 
         sxx = f[:, 2] * _bc_factor(x_mapped[:, 0], x_mapped[:, 1], segs_sxx, "C0+")
         syy = f[:, 3]

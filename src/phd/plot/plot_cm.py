@@ -231,7 +231,7 @@ def plot_DIC_region(
     Returns:
         List of matplotlib Rectangle patches added.
     """
-    dic_region = _cfg_get(config, "task.inverse.measurements.dic.region", None)
+    dic_region = _cfg_get(config, "task.measurements.dic.region", None)
     if dic_region is None:
         return []
 
@@ -260,8 +260,8 @@ def plot_DIC_region(
             y_min = mesh_y_min + y_min * (mesh_y_max - mesh_y_min)
             y_max = mesh_y_min + y_max * (mesh_y_max - mesh_y_min)
 
-    n_obs_x = int(_cfg_get(config, "task.inverse.measurements.n_observations.x", 0) or 0)
-    n_obs_y = int(_cfg_get(config, "task.inverse.measurements.n_observations.y", 0) or 0)
+    n_obs_x = int(_cfg_get(config, "task.measurements.n_observations.x", 0) or 0)
+    n_obs_y = int(_cfg_get(config, "task.measurements.n_observations.y", 0) or 0)
     dic_points = None
     if add_points and n_obs_x > 0 and n_obs_y > 0:
         x_dic = np.linspace(x_min, x_max, n_obs_x)
@@ -315,6 +315,32 @@ def plot_DIC_region(
                 ax_pred.scatter(dic_points[:, 0], dic_points[:, 1], **scatter_opts)
 
     return added_patches
+
+
+def _coerce_dic_region_to_mesh(dic_region, mx, my):
+    """Convert normalized DIC region [0,1] to mesh coordinates when needed."""
+    x_min, x_max, y_min, y_max = [float(v) for v in dic_region]
+
+    mesh_x_min = float(np.nanmin(mx))
+    mesh_x_max = float(np.nanmax(mx))
+    mesh_y_min = float(np.nanmin(my))
+    mesh_y_max = float(np.nanmax(my))
+
+    dic_is_normalized = (
+        0.0 <= x_min <= 1.0 and 0.0 <= x_max <= 1.0 and
+        0.0 <= y_min <= 1.0 and 0.0 <= y_max <= 1.0
+    )
+    mesh_not_normalized = (
+        abs(mesh_x_max - mesh_x_min) > 2.0 or abs(mesh_y_max - mesh_y_min) > 2.0
+    )
+
+    if dic_is_normalized and mesh_not_normalized:
+        x_min = mesh_x_min + x_min * (mesh_x_max - mesh_x_min)
+        x_max = mesh_x_min + x_max * (mesh_x_max - mesh_x_min)
+        y_min = mesh_y_min + y_min * (mesh_y_max - mesh_y_min)
+        y_max = mesh_y_min + y_max * (mesh_y_max - mesh_y_min)
+
+    return [x_min, x_max, y_min, y_max]
 
 
 def compute_metrics_from_history(losshistory, config):
@@ -734,9 +760,10 @@ def plot_slice_comparison(
             # add_colorbar(fig, map_ax, art_map["im"], location="left", size=0.005, shift=0.01)
 
             if dic_region is not None:
+                region_to_plot = _coerce_dic_region_to_mesh(dic_region, mx, my)
                 plot_curvilinear_region(
                     map_ax,
-                    dic_region,
+                    region_to_plot,
                     mesh_transform=mesh_transform,
                     edgecolor="w",
                     facecolor=mcolors.to_rgba("w", alpha=0.10),
