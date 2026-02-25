@@ -116,7 +116,6 @@ task:
         sample_id: 0
       noise_ratio: 0.0
 
-    # Used when problem.material.law == isotropic
     init_guess:
       isotropic:
         E: 100000.0

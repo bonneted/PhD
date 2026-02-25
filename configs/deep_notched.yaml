@@ -43,7 +43,8 @@ problem:
 
   bc:
     corner_eps: 0.0
-    displacement_bc: false
+    displacement_bc_top: false
+    displacement_bc_bottom: true
     n_integral: 100
     n_free: 400
 
@@ -69,7 +70,7 @@ model:
   architecture:
     n_hidden: 3
     width: 32
-    rank: 50
+    rank: 32
     activations: tanh
     initialization: "Glorot uniform"
     mlp_type: mlp
