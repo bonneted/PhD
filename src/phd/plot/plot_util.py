@@ -740,7 +740,7 @@ def plot_field_evolution(
                 if exact_norm > 0:
                     rel_l2_error = np.linalg.norm(residual) / exact_norm
                     ax[row, col_resid].text(
-                        0.5, -0.05, r"$e_{L^2}^{rel}=$" + f"{rel_l2_error:.2e}", 
+                        0.5, -0.05, r"$e=$" + f"{rel_l2_error:.2e}", 
                         transform=ax[row, col_resid].transAxes, 
                         ha='center', va='top', fontsize=min_font_size,
                     )
