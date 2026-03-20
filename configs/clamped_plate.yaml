@@ -1,0 +1,96 @@
+# Clamped plate problem - Complete self-contained configuration
+
+problem:
+  name: clamped_plate
+
+  reference:
+    # Relative to src/phd/io/dataset or absolute path
+    dataset: clamped_plate/100x100.dat
+
+  material:
+    E: 1.0e9
+    nu: 0.3
+    thickness: 1.0e-3
+
+  loading:
+    q: 1.0
+
+  # Fields to log during training
+  log_fields:
+    - W
+
+  # <= 0 triggers auto-scaling
+  output_scale:
+    w: 0.0
+
+model:
+  net_type: SPINN  # SPINN or PINN
+
+  architecture:
+    n_hidden: 3
+    width: 32
+    rank: 32
+    activations: tanh
+    initialization: "Glorot normal"
+    mlp_type: mlp
+
+  fourier_features:
+    enabled: false
+    n_features: 64
+    sigma: 1.0
+
+training:
+  n_iter: 60000
+  lr: 1.0e-3
+  num_domain: 10000
+  bc_type: hard
+
+  # Length must be n_residuals + n_bcs
+  # displacement: 1 PDE (+1 inverse measurement if inverse)
+  loss_weights: none
+
+  # Loss weighting selector: none | grad_norm | ntk_norm
+  loss_normalization:
+    scheme: none
+
+  lr_decay: null
+
+  self_attention:
+    enabled: false
+    init: constant
+    update_factor: -1.0
+    share_weights: true
+
+  log_every: 200
+  generate_video: false
+
+task:
+  type: forward  # forward or inverse
+
+  inverse:
+    measurements:
+      source: fem  # fem or dic
+      n_observations:
+        x: 10
+        y: 10
+      dic:
+        # Relative region [x_min, x_max, y_min, y_max] for source=fem
+        region: [0.0, 1.0, 0.0, 1.0]
+        # For source=dic, expects legacy files X.csv, Y.csv, W.csv
+        path: clamped_plate/dic/0noise
+      noise_ratio: 0.0
+
+    init_guess:
+      D: 60.0
+
+    training_factors:
+      D: 1.0
+
+    normalize_parameters: true
+
+results:
+  base_dir: results
+  experiment_name: null
+  save_on_disk: false
+
+seed: 0

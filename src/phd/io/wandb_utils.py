@@ -177,6 +177,9 @@ def _get_default_train_fn(problem: str) -> Callable:
     elif problem == "analytical_plate":
         from phd.models.cm.analytical_plate import train
         return train
+    elif problem == "clamped_plate":
+        from phd.models.cm.clamped_plate import train
+        return train
     else:
         raise ValueError(f"Unknown problem: {problem}. Provide train_fn explicitly.")
 
