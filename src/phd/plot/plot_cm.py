@@ -232,7 +232,10 @@ def plot_DIC_region(
     Returns:
         List of matplotlib Rectangle patches added.
     """
+    # Support both legacy measurement path and inverse-task path.
     dic_region = _cfg_get(config, "task.measurements.dic.region", None)
+    if dic_region is None:
+        dic_region = _cfg_get(config, "task.inverse.measurements.dic.region", None)
     if dic_region is None:
         return []
 
@@ -261,8 +264,14 @@ def plot_DIC_region(
             y_min = mesh_y_min + y_min * (mesh_y_max - mesh_y_min)
             y_max = mesh_y_min + y_max * (mesh_y_max - mesh_y_min)
 
-    n_obs_x = int(_cfg_get(config, "task.measurements.n_observations.x", 0) or 0)
-    n_obs_y = int(_cfg_get(config, "task.measurements.n_observations.y", 0) or 0)
+    n_obs_x = _cfg_get(config, "task.measurements.n_observations.x", None)
+    n_obs_y = _cfg_get(config, "task.measurements.n_observations.y", None)
+    if n_obs_x is None:
+        n_obs_x = _cfg_get(config, "task.inverse.measurements.n_observations.x", 0)
+    if n_obs_y is None:
+        n_obs_y = _cfg_get(config, "task.inverse.measurements.n_observations.y", 0)
+    n_obs_x = int(n_obs_x or 0)
+    n_obs_y = int(n_obs_y or 0)
     dic_points = None
     if add_points and n_obs_x > 0 and n_obs_y > 0:
         x_dic = np.linspace(x_min, x_max, n_obs_x)
@@ -835,6 +844,7 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
         time_unit: "s" or "min" - unit for time display (default "s").
         field_units: None/False, True/"auto", dict, or callable(field_name, title).
             Appends units to reference-row field titles.
+        field_cmap: colormap used for reference/prediction field panels (default "viridis").
         elapsed_time: total elapsed time in seconds (required if step_type="time").
         show_iter: bool, if True show current iteration/time in metrics x-label (default False).
     
@@ -847,6 +857,7 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
             "show_iter": False, "plot_contours": False, "side_panel": "variables",
             "color_percentile": None,
             "field_units": None,
+            "field_cmap": "viridis",
             "hide_frame_on_curvilinear": True, **opts}
     
     steps, metrics, vars_history, fields_init, get_snapshot_fn, (mx, my), (xe, ye), config, fields_dict = process_results(
@@ -1054,14 +1065,14 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
             my,
             data_list[0],
             title=title_ref,
-            cmap="viridis",
+            cmap=o["field_cmap"],
             plot_contours=o["plot_contours"],
             color_percentile=o.get("color_percentile", None),
         )
         add_colorbar(fig, ax[0, col], art_ref["im"], location="top", shift=0.06)
         
         # Row 1: Prediction
-        art_pred = plot_field(ax[1, col], mx, my, data_list[1], title=title_pred, cmap="viridis", vmin=art_ref["im"].get_clim()[0], vmax=art_ref["im"].get_clim()[1], plot_contours=o["plot_contours"])
+        art_pred = plot_field(ax[1, col], mx, my, data_list[1], title=title_pred, cmap=o["field_cmap"], vmin=art_ref["im"].get_clim()[0], vmax=art_ref["im"].get_clim()[1], plot_contours=o["plot_contours"])
         
         # Row 2: Error (if enabled)
         art_err = None
