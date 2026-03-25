@@ -17,6 +17,7 @@ from .config import (
 # General plotting utilities
 from .plot_util import (
     make_formatter,
+    format_field_title_with_unit,
     init_metrics,
     update_metrics,
     init_parameter_evolution,
@@ -44,6 +45,7 @@ __all__ = [
     "apply_kul_colors",
     # Plot utilities
     "make_formatter",
+    "format_field_title_with_unit",
     "init_metrics",
     "update_metrics",
     "init_parameter_evolution",

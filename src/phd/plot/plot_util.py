@@ -14,6 +14,64 @@ import matplotlib.animation as animation
 from phd.plot.config import get_current_config, KUL_CYCLE
 
 
+DEFAULT_FIELD_UNITS = {
+    # Displacements
+    "Ux": "mm",
+    "Uy": "mm",
+    "Uz": "mm",
+    # Stresses
+    "Sxx": "MPa",
+    "Syy": "MPa",
+    "Szz": "MPa",
+    "Sxy": "MPa",
+    "Sxz": "MPa",
+    "Syz": "MPa",
+}
+
+
+def format_field_title_with_unit(field_name, title, field_units=None):
+    """Append a unit to a field title.
+
+    Args:
+        field_name: canonical field key, e.g. "Sxx".
+        title: display title, usually LaTeX-formatted.
+        field_units: unit specification.
+            - None / False: keep title unchanged.
+            - True / "auto": use DEFAULT_FIELD_UNITS mapping.
+            - dict: mapping field name -> unit string.
+            - callable: function(field_name, title) -> unit string or None.
+
+    Returns:
+        Title string with optional unit suffix, e.g. "$\\sigma_{xx}$ [MPa]".
+    """
+    if not field_units:
+        return title
+
+    unit = None
+    if field_units is True or field_units == "auto":
+        unit = DEFAULT_FIELD_UNITS.get(field_name)
+    elif isinstance(field_units, dict):
+        unit = field_units.get(field_name)
+    elif callable(field_units):
+        unit = field_units(field_name, title)
+    else:
+        raise TypeError(
+            "field_units must be one of: None/bool/'auto', dict, or callable(field_name, title)."
+        )
+
+    if unit is None:
+        return title
+
+    unit = str(unit).strip()
+    if not unit:
+        return title
+
+    if not (unit.startswith("[") and unit.endswith("]")):
+        unit = f"[{unit}]"
+
+    return f"{title} {unit}"
+
+
 def make_formatter():
     """Create a scientific notation formatter for colorbar ticks."""
     formatter = ticker.ScalarFormatter(useMathText=True)

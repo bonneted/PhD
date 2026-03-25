@@ -16,6 +16,7 @@ from phd.plot.config import get_current_config, KUL_CYCLE
 # Re-export general plotting functions for convenient import
 from phd.plot.plot_util import (
     make_formatter,
+    format_field_title_with_unit,
     init_metrics,
     update_metrics,
     init_parameter_evolution,
@@ -683,8 +684,14 @@ def plot_slice_comparison(
     ax=None,
     plot_contours=False,
     color_percentile=None,
+    field_units=None,
 ):
-    """Plot 2D field maps + 1D slice profiles in a legacy-compatible, square-grid layout."""
+    """Plot 2D field maps + 1D slice profiles in a legacy-compatible, square-grid layout.
+
+    Args:
+        field_units: None/False, True/"auto", dict, or callable(field_name, title).
+            Appends units to field titles used in reference-map panels.
+    """
     fields = list(fields)
     if not fields:
         raise ValueError("fields must contain at least one field name.")
@@ -735,6 +742,7 @@ def plot_slice_comparison(
         exact_grid = fields_init[fname]["data"][0]
         pred_grid = snapshot[fname][1]
         title = fields_init[fname].get("title", fname)
+        title_ref = format_field_title_with_unit(fname, title, field_units)
 
         for j, spec in enumerate(slice_specs):
             direction = str(spec.get("direction", "vertical")).lower()
@@ -751,7 +759,7 @@ def plot_slice_comparison(
                 mx,
                 my,
                 exact_grid,
-                title=title,
+                title=title_ref,
                 cmap="viridis",
                 hide_frame="auto",
                 plot_contours=plot_contours,
@@ -825,6 +833,8 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
         metrics: optional list of metric names to draw in the metrics subplot.
         step_type: "iteration" or "time" - controls x-axis and title display.
         time_unit: "s" or "min" - unit for time display (default "s").
+        field_units: None/False, True/"auto", dict, or callable(field_name, title).
+            Appends units to reference-row field titles.
         elapsed_time: total elapsed time in seconds (required if step_type="time").
         show_iter: bool, if True show current iteration/time in metrics x-label (default False).
     
@@ -836,6 +846,7 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
          "metrics": ["L2 Error"], "step_type": "iteration", "time_unit": "min",
             "show_iter": False, "plot_contours": False, "side_panel": "variables",
             "color_percentile": None,
+            "field_units": None,
             "hide_frame_on_curvilinear": True, **opts}
     
     steps, metrics, vars_history, fields_init, get_snapshot_fn, (mx, my), (xe, ye), config, fields_dict = process_results(
@@ -1024,6 +1035,7 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
         col = col_offset + i
         data_list = snapshot[fname]
         title = fields_init[fname].get("title", fname)
+        title_ref = format_field_title_with_unit(fname, title, o.get("field_units", None))
         if title.endswith("$"):
             base = title[1:-1]
             base = title[1:-1]
@@ -1041,12 +1053,12 @@ def init_plot(results, exact_solution_fn, iteration=-1, fig=None, ax=None, **opt
             mx,
             my,
             data_list[0],
-            title=title,
+            title=title_ref,
             cmap="viridis",
             plot_contours=o["plot_contours"],
             color_percentile=o.get("color_percentile", None),
         )
-        add_colorbar(fig, ax[0, col], art_ref["im"], location="top", shift=0.05)
+        add_colorbar(fig, ax[0, col], art_ref["im"], location="top", shift=0.06)
         
         # Row 1: Prediction
         art_pred = plot_field(ax[1, col], mx, my, data_list[1], title=title_pred, cmap="viridis", vmin=art_ref["im"].get_clim()[0], vmax=art_ref["im"].get_clim()[1], plot_contours=o["plot_contours"])
@@ -1207,6 +1219,8 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
         metrics: list of metric names to plot (default ["Residual"]).
         step_type: "iteration" or "time" - controls x-axis display.
         time_unit: "s" or "min" - unit for time display.
+        field_units: None/False, True/"auto", dict, or callable(field_name, title).
+            Appends units to reference field title in the top-left panel.
         show_iter: bool, if True show current iteration/time in metrics x-label.
     
     Returns:
@@ -1218,6 +1232,7 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
     o = {"dpi": 100, "metrics": ["L2 Error"], "step_type": "iteration",
          "time_unit": "min", "show_iter": False, "plot_contours": True,
             "color_percentile": None,
+                "field_units": None,
          "hide_frame_on_curvilinear": True, **opts}
     
     # Process both results
@@ -1292,6 +1307,7 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
     # Get exact solution and field title
     exact_data = fields_init1[field]["data"][0]
     field_title = fields_init1[field].get("title", field)
+    field_title_ref = format_field_title_with_unit(field, field_title, o.get("field_units", None))
     if field_title.endswith("$"):
         base = field_title[1:-1]
         base = field_title[1:-1]
@@ -1316,7 +1332,7 @@ def plot_compare(results1, results2, exact_solution_fn, field="Ux", iteration=-1
         mx,
         my,
         exact_data,
-        title=field_title,
+        title=field_title_ref,
         cmap="viridis",
         plot_contours=o["plot_contours"],
         color_percentile=o.get("color_percentile", None),
