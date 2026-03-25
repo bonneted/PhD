@@ -14,7 +14,7 @@ Companion code for the PhD thesis. This repository maps thesis chapters to execu
     - `chapters/II_PINNs/03_poisson_equation.ipynb`
     - `chapters/II_PINNs/04_plate_example.ipynb`
 
-<video src="chapters/II_PINNs/videos/spinn_mixed_inv.mp4" controls muted loop playsinline width="100%"></video>
+![Chapter II example](chapters/II_PINNs/images/field_evolution_spinn_mixed.png)
 
 ### Chapter III - Improving PINNs
 - Scope: SPINN formulation, computational scaling, Fourier features, self-adaptive weighting, and geometry mapping.
@@ -34,7 +34,7 @@ Companion code for the PhD thesis. This repository maps thesis chapters to execu
     - `chapters/IV_MaterialCharacterization/02_deep_notched/`
     - `chapters/IV_MaterialCharacterization/03_clamped_plate/`
 
-<video src="chapters/IV_MaterialCharacterization/01_side_loaded_plate/videos/missing_data_subregion_animation.mp4" controls muted loop playsinline width="100%"></video>
+![Chapter IV example](chapters/IV_MaterialCharacterization/01_side_loaded_plate/images/missing_data_subregion_results.png)
 
 ### Chapter V - Uncertainty Propagation
 - Scope: stochastic PINN workflows (PINN-PC, SPINN-NC) on Poisson and composite-plate problems.
