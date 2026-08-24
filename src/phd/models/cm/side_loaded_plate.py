@@ -313,7 +313,7 @@ def _load_side_loaded_plate_measurements(
             obs = ref["strain_interp"](X_obs_input)
 
     if noise_ratio > 0:
-        obs = obs + np.random.normal(0.0, noise_ratio * np.std(obs), size=obs.shape)
+        obs = obs + np.random.normal(0.0, noise_ratio, size=obs.shape)
 
     return {
         "type": meas_type,
