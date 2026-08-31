@@ -1,0 +1,134 @@
+# Planar biaxial test with rakes (Abaqus reference) - complete configuration
+#
+#   load_config("biaxial_rakes", overrides=["problem.material.law=goh"])
+
+problem:
+  name: biaxial_rakes
+
+  geometry:
+    L: 7.0            # sample side [mm]
+    H: 1.8            # membrane thickness [mm]
+
+  material:
+    law: nh           # nh or goh
+
+    # Ground truth, read from the Abaqus .inp files
+    nh:
+      C10: 0.25       # [MPa]
+    goh:
+      C10: 0.013      # [MPa]
+      k1: 1.1         # [MPa]
+      k2: 3.7         # [-]
+      kappa: 0.24     # [-]
+      alpha_deg: 29.983  # [deg], two families at +/- alpha
+
+  reference:
+    dataset_by_law:
+      nh: rakes_ideal_7x7mm_nh
+      goh: rakes_ideal_7x7mm_goh
+
+  loading:
+    # Frames of the loading ramp to use. null = every frame in the dataset.
+    # A stride keeps the loading axis small without losing the path.
+    frames: null
+    frame_stride: 4
+
+  log_fields:
+    - Ux
+    - Uy
+    - Pxx
+    - Pyy
+  log_grid: 30
+
+model:
+  net_type: SPINN
+  formulation: mixed
+
+  architecture:
+    n_hidden: 4
+    width: 64
+    rank: 48
+    activations: tanh
+    initialization: "Glorot normal"
+    mlp_type: mlp
+
+training:
+  n_iter: 40000
+  lr: 1.0e-3
+  num_domain: 4900        # spatial collocation per frame (n x n)
+  lr_decay: null
+
+  # Relative weights, applied on top of the dimensionless residuals.
+  # Order: [eq_x, eq_y, c_xx, c_xy, c_yx, c_yy, data_Ux, data_Uy, F_x, F_y]
+  loss_weights: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 100.0, 100.0, 10.0, 10.0]
+
+  log_every: 500
+  generate_video: false
+
+task:
+  type: inverse
+
+  inverse:
+    measurements:
+      displacement:
+        enabled: true
+        n_observations:
+          x: 40
+          y: 40
+      force:
+        enabled: true
+        n_points: 40      # quadrature points along each section cut
+        n_cuts: 5         # number of parallel cuts per direction
+      noise_ratio: 0.0
+
+    # physical | bounded | unconstrained -- see configs/biaxial_test.yaml
+    parameterization: physical
+
+    parameter_scales:
+      nh:
+        C10: log
+      goh:
+        C10: log
+        k1: log
+        k2: log
+        kappa: sigmoid
+        alpha_deg: sigmoid
+
+    bounds:
+      nh:
+        C10: [0.0, 10.0]
+      goh:
+        C10: [0.0, 1.0]
+        k1: [0.0, 50.0]
+        k2: [0.0, 50.0]
+        kappa: [0.0, 0.3333333]
+        alpha_deg: [0.0, 90.0]
+
+    init_guess:
+      nh:
+        C10: 1.0
+      goh:
+        C10: 0.1
+        k1: 3.0
+        k2: 1.5
+        kappa: 0.15
+        alpha_deg: 15.0
+
+    training_factors:
+      nh:
+        C10: 1.0
+      goh:
+        C10: 1.0
+        k1: 1.0
+        k2: 1.0
+        kappa: 1.0
+        alpha_deg: 1.0
+
+    normalize_parameters: true
+
+results:
+  base_dir: results
+  experiment_name: null
+  save_on_disk: false
+
+seed: 0

@@ -1,0 +1,183 @@
+# Ideal planar biaxial test of soft tissue - complete self-contained configuration
+#
+# Override from a notebook, e.g.
+#   load_config("biaxial_test", overrides=["problem.material.law=nh", "task.type=inverse"])
+
+# --- Problem Definition ---
+problem:
+  name: biaxial_test
+
+  geometry:
+    L: 7.0            # sample side [mm]
+    H: 1.0            # sample thickness [mm]
+
+  material:
+    # neo-hookean ("nh") or Gasser-Ogden-Holzapfel ("goh")
+    law: goh
+
+    # Ground-truth parameters (thesis Tables 3.2 / 3.3)
+    nh:
+      C10: 0.4        # [MPa]
+    goh:
+      C10: 0.019      # [MPa]
+      k1: 5.15        # [MPa]
+      k2: 8.64        # [-]
+      kappa: 0.24     # [-]  fibre dispersion, physical range [0, 1/3]
+      alpha_deg: 38.8 # [deg] mean fibre angle from the 1-direction
+
+  # FEM reference data (src/phd/io/dataset/biaxial_test, produced by
+  # src/phd/fem/biaxial_test.py)
+  reference:
+    dataset_by_law:
+      nh: ideal_7x7mm_nh
+      goh: ideal_7x7mm_goh
+
+  loading:
+    # Which loading states of the protocol to use.
+    # null = every state in the reference dataset (4 ratios x 4 stretch levels).
+    # Otherwise a list of integer indices into the dataset's "states" array.
+    states: null
+
+  # Fields to log during training.
+  # available: Ux, Uy, Pxx, Pxy, Pyx, Pyy, Fxx, Fxy, Fyx, Fyy,
+  #            Exx, Eyy, Exy, Sxx, Syy, Sxy, lambda1, lambda2
+  log_fields:
+    - Ux
+    - Uy
+    - Pxx
+    - Pyy
+    - Sxx
+    - Syy
+  log_grid: 30        # n x n spatial grid used for field logging
+
+# --- Model Architecture ---
+model:
+  net_type: SPINN     # SPINN or PINN
+  # Only "mixed" is implemented for finite strain:
+  # 6 outputs [Ux, Uy, Pxx, Pxy, Pyx, Pyy]
+  formulation: mixed
+
+  architecture:
+    n_hidden: 3
+    width: 32
+    rank: 32
+    activations: tanh
+    initialization: "Glorot normal"
+    mlp_type: mlp
+
+# --- Training Settings ---
+training:
+  n_iter: 20000
+  lr: 1.0e-3
+  # Spatial collocation resolution per loading state (n_x = n_y = sqrt).
+  # The loading-state axis is added on top, so the tensor grid is n_x*n_y*n_states.
+  num_domain: 2500
+  bc_type: hard
+
+  # Per-loss weights, length = 6 residuals + n_bcs. "none" leaves them at 1.
+  loss_weights: none
+
+  lr_decay: null
+
+  self_attention:
+    enabled: false
+    init: constant
+    update_factor: -1.0
+    share_weights: true
+
+  log_every: 200
+  generate_video: false
+
+# --- Task ---
+task:
+  type: inverse       # forward or inverse
+
+  inverse:
+    measurements:
+      # Full-field displacement (the DIC analogue). In an *ideal* biaxial test
+      # the deformation is homogeneous, so this carries no information about
+      # the material parameters - it only pins down the kinematics.
+      displacement:
+        enabled: true
+        n_observations:
+          x: 10
+          y: 10
+      # Edge force (what the biaxial rig actually measures). This is the
+      # observable the parameters are identified from.
+      force:
+        enabled: true
+        n_points: 20    # quadrature points along each measured edge
+        # global   - residual is an absolute force error, normalised by max|F|.
+        #            With GOH the protocol forces span ~290x, so only the
+        #            highest-stretch states are then visible to the optimiser.
+        # per_state - residual is a relative force error, so every loading state
+        #            of the protocol counts equally.
+        normalization: per_state
+      noise_ratio: 0.0  # relative Gaussian noise on both measurement types
+
+    init_guess:
+      nh:
+        C10: 1.0
+      goh:
+        C10: 0.1
+        k1: 1.0
+        k2: 3.0
+        kappa: 0.15
+        alpha_deg: 20.0
+
+    # How the trainable material variables are parameterised.
+    #   bounded       - value = lo + (hi-lo)*sigmoid(raw), so the parameters can never
+    #                   leave the physical range. training_factors and
+    #                   normalize_parameters are ignored in this mode.
+    #   unconstrained - value = raw * training_factor (the original behaviour). The
+    #                   optimiser can drive C10 or k1 negative, which is unphysical.
+    #   physical      - per-parameter map from task.inverse.parameter_scales:
+    #                   "log" for strictly positive parameters (no saturation,
+    #                   and Adam then moves every parameter at the same relative
+    #                   rate, which matters because the force sensitivity to C10
+    #                   is ~1000x weaker than to kappa), "sigmoid" for genuinely
+    #                   range-bounded ones.
+    parameterization: physical
+
+    parameter_scales:
+      nh:
+        C10: log
+      goh:
+        C10: log
+        k1: log
+        k2: log
+        kappa: sigmoid
+        alpha_deg: sigmoid
+
+    # Physical ranges used by parameterization=bounded. Angles in degrees.
+    # kappa is bounded by the model itself: 0 = aligned fibres, 1/3 = isotropic.
+    bounds:
+      nh:
+        C10: [0.0, 10.0]
+      goh:
+        C10: [0.0, 1.0]
+        k1: [0.0, 50.0]
+        k2: [0.0, 50.0]
+        kappa: [0.0, 0.3333333]
+        alpha_deg: [0.0, 90.0]
+
+    training_factors:
+      nh:
+        C10: 1.0
+      goh:
+        C10: 1.0
+        k1: 1.0
+        k2: 1.0
+        kappa: 1.0
+        alpha_deg: 1.0
+
+    normalize_parameters: true
+
+# --- Results ---
+results:
+  base_dir: results
+  experiment_name: null
+  save_on_disk: false
+
+# --- Reproducibility ---
+seed: 0

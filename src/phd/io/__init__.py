@@ -25,6 +25,8 @@ from .utils import (
     get_side_loaded_plate_dataset_path,
     load_side_loaded_plate_reference_raw,
     load_side_loaded_plate_dic_sample,
+    get_biaxial_test_dataset_path,
+    load_biaxial_test_reference,
 )
 
 from .wandb_utils import (
@@ -54,6 +56,8 @@ __all__ = [
     "get_side_loaded_plate_dataset_path",
     "load_side_loaded_plate_reference_raw",
     "load_side_loaded_plate_dic_sample",
+    "get_biaxial_test_dataset_path",
+    "load_biaxial_test_reference",
     # Wandb utilities
     "get_sweep_dir",
     "setup_wandb_environment",

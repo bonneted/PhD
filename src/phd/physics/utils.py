@@ -11,18 +11,21 @@ from jax.flatten_util import ravel_pytree
 
 def transform_coords(x):
     """
-    Transform SPINN list input [x1_coords, x2_coords] to 2D array via meshgrid.
-    
+    Transform a SPINN list input [x1_coords, ..., xd_coords] to a dense array
+    of coordinates via meshgrid, using the "ij" ordering SPINN outputs are
+    raveled with.
+
     Args:
-        x: List of 1D arrays [x1, x2] or 2D array (N, 2)
-        
+        x: List of 1D arrays [x1, ..., xd] (any d >= 1) or an (N, d) array
+
     Returns:
-        2D array of shape (N, 2) with all coordinate combinations
+        Array of shape (N, d) with all coordinate combinations, N = prod(len(xi))
     """
     if isinstance(x, (list, tuple)):
-        x0 = jnp.atleast_1d(x[0].squeeze())
-        x1 = jnp.atleast_1d(x[1].squeeze())
-        x_mesh = [xi.ravel() for xi in jnp.meshgrid(x0, x1, indexing="ij")]
+        axes = [jnp.atleast_1d(jnp.asarray(xi).squeeze()) for xi in x]
+        if len(axes) == 1:
+            return axes[0].reshape(-1, 1)
+        x_mesh = [xi.ravel() for xi in jnp.meshgrid(*axes, indexing="ij")]
         return jnp.stack(x_mesh, axis=-1)
     return x
 

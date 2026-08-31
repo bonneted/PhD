@@ -8,10 +8,11 @@ The library follows a mostly modular layout:
 
 - src/phd/config: Hydra/OmegaConf loading and override utilities.
 - src/phd/models: Problem entrypoints (Allen-Cahn and continuum mechanics variants).
-- src/phd/physics: Pure JAX mechanics kernels and PDE builders.
+- src/phd/physics: Pure JAX mechanics kernels and PDE builders (linear elasticity and finite-strain hyperelasticity).
 - src/phd/io: Dataset resolution, callbacks, run persistence, wandb helpers.
 - src/phd/plot: Config-driven plotting, animation, CM visualization logic.
 - src/phd/geo: Mapping/mesh utilities for non-rectangular geometries.
+- src/phd/fem: FEniCS reference solutions. Legacy FEniCS 2019 (conda env `fenics`), not importable library code.
 
 Main runtime flow:
 
@@ -69,6 +70,14 @@ Persistence structure:
 - variable_arrays.npz
 - fields/steps.txt + fields_STEP.npz + optional x_eval.npz
 
+Dataset helpers (src/phd/io/dataset/utils.py, re-exported from phd.io):
+
+- get_side_loaded_plate_dataset_path, load_side_loaded_plate_reference_raw,
+  load_side_loaded_plate_dic_sample
+- get_biaxial_test_dataset_path(filename), load_biaxial_test_reference(filename)
+  Biaxial-test references are .npz bundles (coords, states, u, P, force, meta) produced by
+  src/phd/fem/biaxial_test.py, unlike the flat .dat files of the other problems.
+
 WandB layer (src/phd/io/wandb_utils.py):
 
 - setup_wandb_sweep
@@ -91,9 +100,29 @@ Primary API (src/phd/physics/mechanics.py):
 - strain_from_output, stress_from_output, make_output_field_fn
 - make_pde(net_type, formulation, ...)
 
+Finite-strain hyperelasticity (src/phd/physics/hyperelasticity.py):
+
+- neo_hookean_energy, goh_energy, make_energy_fn(law, params)
+  Incompressible plane-stress strain energy densities. Laws: "nh"/"neo_hookean",
+  "goh" (fibre families at +/- alpha) and "goh_ref" (both families at +alpha, reproducing
+  the reference projects/FIBER/GOH.py exactly).
+- get_parameter_names, get_parameter_bounds, PARAMETER_BOUNDS
+- deformation_gradient, green_lagrange, first_pk_from_F, first_pk_from_F_batch,
+  cauchy_from_first_pk
+- spatial_jacobian (SPINN/PINN; differentiates only w.r.t. the first two inputs, so extra
+  input coordinates such as a loading-state axis are supported)
+- make_hyperelastic_pde(energy_fn, net_type, formulation="mixed")
+  Mixed formulation only, 6 outputs MIXED_OUTPUTS = [Ux, Uy, Pxx, Pxy, Pyx, Pyy]:
+  2 equilibrium residuals (div_X P = 0) + 4 constitutive residuals.
+- make_hyperelastic_output_field_fn(net_type)
+
+Credit: the constitutive equations are ported from the KU Leuven Soft Tissue Mechanics
+reference implementation (projects/FIBER/{NH,GOH}.py, H. Fehervary and J. Vastmans, 2020),
+reformulated as a differentiable energy so P follows from autodiff.
+
 Utilities (src/phd/physics/utils.py):
 
-- transform_coords for SPINN input list -> tensor-grid coordinates
+- transform_coords for SPINN input list -> tensor-grid coordinates (any input dimension)
 - compute_loss_weight_factors (grad/ntk style)
 - apply_loss_weight_grad_norm
 
@@ -117,6 +146,8 @@ CM family (src/phd/models/cm):
 - side_loaded_plate.py
 - deep_notched.py
 - clamped_plate.py
+- biaxial_test.py
+- biaxial_rakes.py
 
 Common CM pattern:
 
@@ -126,6 +157,49 @@ Common CM pattern:
 - results dict with callbacks
 - save_run_data/load_run wrappers per problem
 - thin plot wrappers delegating to phd.plot.plot_cm
+
+biaxial_test.py specifics:
+
+- Finite strain, so it uses phd.physics.hyperelasticity rather than make_pde.
+- SPINN only, with a third input coordinate indexing the loading state, so one model
+  covers the whole (lambda11, lambda22) protocol. Collocation points are installed with
+  data.replace_with_anchors instead of geometry sampling, because the loading axis must sit
+  exactly on the protocol nodes.
+- make_loading_features is applied as a feature transform so the third SPINN factor sees
+  the stretch pair (lambda11-1, lambda22-1) rather than the bare state index. Without it
+  the loading axis under-fits badly: the stress is a jagged function of the index (the
+  protocol interleaves four ratio blocks) and every high-index state ends up with nearly
+  the same predicted force.
+- The deformation is homogeneous by construction, so the identifiable measurement is the
+  edge force, imposed as a PointSetOperatorBC whose operator integrates the P output over
+  an edge. Displacement observations are optional and uninformative for the parameters.
+- Extra result keys: "reference" (FEM data), "material" (true/identified parameters),
+  "loss_labels". Helpers: parameter_summary, predict_state, predicted_forces.
+- Works in normalised coordinates xi = X/L and displacement u/L; all residuals are divided
+  by a stress scale derived from the largest measured force.
+
+Scaling is per loading state, not global. Both the stress output scale and the
+equilibrium/constitutive residual scale come from each state's own measured force. With
+GOH the protocol stresses span ~290x (the fibre term is exponential), and a single global
+scale leaves the low-stretch states needing network outputs around 3e-3, where no relative
+accuracy is available; that alone was the difference between MPE 47% and MPE 16% on the
+GOH identification. NH spans only 5.3x and is insensitive to the choice.
+
+Parameterisation of the trainable material variables is selected by
+task.inverse.parameterization and built by build_material_variables (shared with
+biaxial_rakes):
+
+- physical (default): "log" for strictly positive parameters, "sigmoid" for range-bounded
+  ones, per task.inverse.parameter_scales.
+- bounded: sigmoid onto task.inverse.bounds for every parameter.
+- unconstrained: the original raw * training_factor behaviour; can leave the physical
+  region (it drove C10 negative on GOH).
+
+Known limitation: C10 is only weakly identifiable from edge forces at physiological
+stretch. Its relative sensitivity is ~1000x below that of kappa, and a 1% force noise
+gives it a 65% coefficient of variation (the other four parameters stay under 12%). The
+thesis reports the same effect. GOH currently identifies k1, k2, kappa and alpha to
+1-5% while C10 remains ~70% low.
 
 Observed divergence:
 
@@ -175,6 +249,33 @@ Observed issue:
 
 - This file mixes old research utility code (including legacy naming/style and unused helpers) with newer class-based mapping API, reducing maintainability.
 
+biaxial_rakes.py (rake-based test, Abaqus reference):
+
+- Same finite-strain mixed formulation, but no hard BC: the outer boundary is
+  traction-free and the load enters through 20 interior rake holes. The measured
+  displacement field is a dense soft constraint instead, and the stress level is set by
+  section-force integrals H*int P_xx dY = Right_Fx on several parallel cuts between
+  opposite rake rows (verified against the Abaqus rake forces to 0.013%).
+- Collocation, constitutive residuals and displacement data are masked inside the
+  r = 0.15 mm rake holes, where there is no material.
+- Unlike the idealised test the deformation is heterogeneous (~20% deviation from the
+  best-fit affine field), so the displacement field does constrain the parameters.
+
+## 2.7 src/phd/fem
+
+FEniCS reference solutions used to generate the datasets in src/phd/io/dataset.
+
+- deep_notched.ipynb, side_loaded_plate.ipynb: notebooks (linear elasticity)
+- biaxial_test.py: runnable script (finite-strain NH/GOH, plane-stress incompressible).
+  Run with `conda run -n fenics python src/phd/fem/biaxial_test.py --law <nh|goh>`;
+  writes src/phd/io/dataset/biaxial_test/ideal_LxLmm_<law>.npz.
+- abaqus_rakes.py: converts the Abaqus rake results in projects/FIBER/Abaqus into
+  src/phd/io/dataset/biaxial_test/rakes_ideal_LxLmm_<law>.npz. Pure numpy/scipy, so it
+  runs in the normal JAX environment (no Abaqus, no FEniCS).
+
+This directory is not importable library code: it needs the legacy FEniCS environment,
+which is separate from the JAX/DeepXDE environment the rest of the library runs in.
+
 ## 3. Public API Surface
 
 Root package exports (src/phd/__init__.py):
@@ -202,6 +303,9 @@ Primary edges:
 - models -> io: callbacks, save/load, ResultsManager
 - models -> plot: rendering wrappers and animation
 - models/deep_notched -> geo: coordinate mapping generation
+- models/biaxial_test -> physics/hyperelasticity: strain energy, P, PDE residuals
+- models/biaxial_rakes -> models/biaxial_test: shared parameterisation and loading features
+- fem/biaxial_test.py -> io/dataset/biaxial_test (offline, different conda environment)
 - notebooks/chapters -> models/config/io/plot
 
 Secondary edges:
@@ -233,7 +337,7 @@ Secondary edges:
 
 ## 5.5 Legacy code in active package
 
-- src/phd/fem contains notebooks, not importable library modules.
+- src/phd/fem contains notebooks and standalone scripts, not importable library modules.
 - src/phd/models/cm/utils.py mainly re-exports symbols and adds little new behavior.
 - src/phd/geo/mapping.py includes substantial legacy procedural code mixed with current API.
 

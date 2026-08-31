@@ -71,3 +71,42 @@ def load_side_loaded_plate_dic_sample(dic_path: str, sample_id: int, measurement
         "y_values": y_values,
         "data": data,
     }
+
+
+def get_biaxial_test_dataset_path(filename: str) -> Path:
+    """Path of a biaxial-test FEM reference file (see src/phd/fem/biaxial_test.py)."""
+    if not filename.endswith(".npz"):
+        filename = f"{filename}.npz"
+    filepath = _dataset_root() / "biaxial_test" / filename
+    if not filepath.exists():
+        raise FileNotFoundError(
+            f"Biaxial test dataset '{filename}' not found at {filepath}. "
+            "Generate it with: conda run -n fenics python src/phd/fem/biaxial_test.py --law <nh|goh>"
+        )
+    return filepath
+
+
+def load_biaxial_test_reference(filename: str) -> dict:
+    """
+    Load the FEM reference of an ideal planar biaxial test.
+
+    Returns a dict with:
+        coords: (n_grid^2, 2) reference coordinates [mm]
+        states: (n_states, 2) prescribed [lambda11, lambda22]
+        u:      (n_states, n_grid^2, 2) displacement [mm]
+        P:      (n_states, n_grid^2, 4) 1st Piola-Kirchhoff [Pxx,Pxy,Pyx,Pyy] [MPa]
+        force:  (n_states, 2) edge forces [N]
+        meta:   dict with law, params, L, H, protocol, units
+    """
+    import json
+
+    filepath = get_biaxial_test_dataset_path(filename)
+    with np.load(filepath, allow_pickle=True) as data:
+        return {
+            "coords": data["coords"],
+            "states": data["states"],
+            "u": data["u"],
+            "P": data["P"],
+            "force": data["force"],
+            "meta": json.loads(str(data["meta"])),
+        }

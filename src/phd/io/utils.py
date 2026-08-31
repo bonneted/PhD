@@ -19,9 +19,13 @@ import numpy as np
 from pathlib import Path
 from scipy.interpolate import RegularGridInterpolator
 import deepxde as dde
-from omegaconf import OmegaConf
+import copy
+
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 from .dataset.utils import (
+    get_biaxial_test_dataset_path,
+    load_biaxial_test_reference,
     get_side_loaded_plate_dataset_path,
     load_side_loaded_plate_dic_sample,
     load_side_loaded_plate_reference_raw,
@@ -279,15 +283,22 @@ class VariableValue(dde.callbacks.Callback):
         precision (int): The precision of variables to display.
         scale_factors (list): Optional list of scaling factors to apply to each variable.
             This is useful when variables are trained with a scaling factor.
+        transforms (list): Optional list of callables, one per variable, mapping the raw
+            trained value to the reported value. Takes precedence over ``scale_factors``
+            for the variables where an entry is not None. Use this when the trained
+            variable is a reparametrisation rather than a simple rescaling, e.g. a
+            bounded material parameter trained through a sigmoid.
     """
 
-    def __init__(self, var_list, period=1, filename=None, precision=2, scale_factors=None):
+    def __init__(self, var_list, period=1, filename=None, precision=2, scale_factors=None,
+                 transforms=None):
         super().__init__()
         self.var_list = var_list if isinstance(var_list, list) else [var_list]
         self.period = period
         self.precision = precision
         self.filename = filename
         self.scale_factors = scale_factors if scale_factors is not None else [1.0] * len(self.var_list)
+        self.transforms = transforms if transforms is not None else [None] * len(self.var_list)
 
         self.file = None
         if filename:
@@ -307,16 +318,22 @@ class VariableValue(dde.callbacks.Callback):
         elif dde.backend.backend_name == "jax":
             raw_values = [var.value for var in self.var_list]
 
-        # Convert to standard python types and apply scale factors
+        # Convert to standard python types, then either transform or rescale
         self.value = []
-        for v, scale in zip(raw_values, self.scale_factors):
+        for v, scale, transform in zip(raw_values, self.scale_factors, self.transforms):
             if hasattr(v, "item"):
-                self.value.append(float(v.item()) * scale)
+                val = float(v.item())
             elif hasattr(v, "__array__"):  # numpy or jax array
                 val = np.array(v).item() if np.ndim(v) == 0 else np.array(v)
-                self.value.append(float(val) * scale if np.isscalar(val) else val * scale)
             else:
-                self.value.append(float(v) * scale)
+                val = float(v)
+
+            if transform is not None:
+                self.value.append(float(transform(val)) if np.isscalar(val) else transform(val))
+            elif np.isscalar(val):
+                self.value.append(float(val) * scale)
+            else:
+                self.value.append(val * scale)
 
         # Store in history
         self.history.append([self.model.train_state.epoch] + self.value)
@@ -680,12 +697,15 @@ def _save_field_snapshots(results, rm):
     # Save evaluation coordinates when available (for exact-vs-pred plotting alignment)
     x_eval = getattr(saver, "x_eval", None)
     if x_eval is not None:
-        if isinstance(x_eval, (list, tuple)) and len(x_eval) == 2:
+        if isinstance(x_eval, (list, tuple)):
+            # One entry per SPINN axis, stored separately so that axes of
+            # different lengths are supported (e.g. a space x space x
+            # loading-state grid). Older runs stored exactly x0 and x1, which
+            # this same layout reads back unchanged.
             np.savez_compressed(
                 fields_dir / "x_eval.npz",
                 kind="list",
-                x0=np.asarray(x_eval[0]),
-                x1=np.asarray(x_eval[1]),
+                **{f"x{i}": np.asarray(axis) for i, axis in enumerate(x_eval)},
             )
         else:
             np.savez_compressed(
@@ -933,8 +953,12 @@ def _load_field_snapshots(run_dir, rm):
         try:
             with np.load(x_eval_file, allow_pickle=True) as f:
                 kind = str(f.get("kind", "array"))
-                if kind == "list" and "x0" in f and "x1" in f:
-                    field_saver.x_eval = [np.asarray(f["x0"]), np.asarray(f["x1"])]
+                axis_keys = sorted(
+                    (k for k in f.files if len(k) > 1 and k[0] == "x" and k[1:].isdigit()),
+                    key=lambda k: int(k[1:]),
+                )
+                if kind == "list" and axis_keys:
+                    field_saver.x_eval = [np.asarray(f[k]) for k in axis_keys]
                 elif "x" in f:
                     field_saver.x_eval = np.asarray(f["x"])
         except Exception as e:
@@ -944,21 +968,47 @@ def _load_field_snapshots(run_dir, rm):
 
 
 def _restore_model(result, train_fn):
-    """Restore a model from saved parameters."""
+    """
+    Restore a model from saved parameters.
+
+    Builds the restore configuration as a DictConfig with the ``runtime.*`` keys
+    the train functions read (``runtime.restored_params`` and
+    ``runtime.restored_external_vars``), rather than a flat dict. Train functions
+    take a DictConfig and address nested keys such as ``training.n_iter``, so the
+    previous flat-dict form raised ``AttributeError`` on the first access.
+    """
     print("Restoring model from saved parameters...")
     config = result["config"]
-    
-    restore_config = {
-        **config,
-        "n_iter": 0,
-        "restored_params": result["model_params"],
-        "restored_external_vars": result["external_vars"],
-        "save_on_disk": False,
-    }
-    
+
+    restore_config = config if isinstance(config, DictConfig) else OmegaConf.create(config)
+    restore_config = copy.deepcopy(restore_config)
+
+    OmegaConf.set_struct(restore_config, False)
+    OmegaConf.update(restore_config, "training.n_iter", 0, merge=True)
+    OmegaConf.update(restore_config, "results.save_on_disk", False, merge=True)
+
+    # Build the model with zero iterations, then inject the saved weights.
+    # The parameters are JAX pytrees and OmegaConf rejects them as config
+    # values ("Value 'ArrayImpl' is not a supported primitive type"), so they
+    # are assigned to the model afterwards rather than passed through the config.
     restored = train_fn(restore_config)
-    result["model"] = restored["model"]
-    
+    model = restored["model"]
+
+    model_params = result.get("model_params")
+    external_vars = result.get("external_vars")
+
+    if model_params is not None:
+        model.net.params = model_params
+    if external_vars is not None and getattr(model, "external_trainable_variables", None):
+        for var, value in zip(model.external_trainable_variables, external_vars.values()):
+            var.value = value
+    if model_params is not None:
+        # deepxde's JAX backend keeps params as [net_params, external_vars];
+        # rebuild it so predict() sees the restored weights.
+        ext = [v.value for v in getattr(model, "external_trainable_variables", []) or []]
+        model.params = [model.net.params, ext]
+
+    result["model"] = model
     return result
 
 
