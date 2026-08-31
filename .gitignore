@@ -12,3 +12,6 @@ chapters/IV_MaterialCharacterization/images/
 
 chapters/III_ImprovingPINNsOld/*
 chapters/III_SPINNOld/*
+
+# FIBER work-in-progress, tracked on the FIBER branch only
+/projects/
